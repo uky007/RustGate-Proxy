@@ -4,43 +4,43 @@
 [![docs.rs](https://docs.rs/rustgate-proxy/badge.svg)](https://docs.rs/rustgate-proxy)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-MITM 対応の HTTP/HTTPS プロキシ。CLI ツールとしてもライブラリ（crate 名: `rustgate-proxy`、lib 名: `rustgate`）としても利用可能。
+MITM-capable HTTP/HTTPS proxy written in Rust. It can be used both as a CLI tool and as a library (crate: `rustgate-proxy`, lib: `rustgate`).
 
-## 機能
+## Features
 
-- **HTTP プロキシ** — 平文 HTTP リクエストの転送（hop-by-hop ヘッダ除去対応）
-- **CONNECT トンネリング** — HTTPS 通信のパススルー（双方向バイトコピー）
-- **MITM モード** — TLS 終端による HTTPS 通信の傍受・閲覧
-- **動的証明書生成** — ドメインごとに CA 署名の証明書を自動生成（キャッシュ付き）
-- **CA 証明書管理** — 初回起動時にルート CA を `~/.rustgate/` に自動生成・保存（秘密鍵は 0600 権限）
-- **リクエスト/レスポンス改変** — `RequestHandler` トレイトによるフック機構
-- **IPv6 対応** — `[::1]:443` 形式の CONNECT ターゲットを正しく処理
-- **セキュリティ配慮** — ログ出力時にクエリパラメータをマスク、公開バインド時の警告
+- **HTTP Proxy** - Forwards plain HTTP requests (with hop-by-hop header stripping)
+- **CONNECT Tunneling** - HTTPS passthrough via bidirectional byte relay
+- **MITM Mode** - TLS termination for HTTPS interception and inspection
+- **Dynamic Certificate Generation** - Per-domain CA-signed cert generation with caching
+- **CA Certificate Management** - Auto-generates and stores root CA in `~/.rustgate/` on first run (private key set to `0600`)
+- **Request/Response Rewriting** - Hook mechanism via the `RequestHandler` trait
+- **IPv6 Support** - Correctly handles CONNECT targets like `[::1]:443`
+- **Security Considerations** - Masks query parameters in logs and warns on non-loopback bind
 
-## アーキテクチャ
+## Architecture
 
 ```
 Client ──TCP──> RustGate Proxy ──TCP/TLS──> Upstream Server
                     |
               +-----+-----+
-              |  HTTP判定  |
+              | HTTP Router |
               +-----+------+
            +--------+--------+
            v        v        v
-        HTTP転送  CONNECT   CONNECT
-        (平文)   (トンネル)  (MITM)
-                  パススルー  TLS終端
+      HTTP Forward CONNECT   CONNECT
+        (Plain)   (Tunnel)   (MITM)
+                 Passthrough TLS Termination
 ```
 
-## インストール
+## Installation
 
-### crates.io から
+### From crates.io
 
 ```bash
 cargo install rustgate-proxy
 ```
 
-### ソースからビルド
+### Build from source
 
 ```bash
 git clone https://github.com/uky007/RustGate-Proxy.git
@@ -48,70 +48,70 @@ cd RustGate-Proxy
 cargo build --release
 ```
 
-## 使い方
+## Usage
 
-### 基本（パススルーモード）
+### Basic (passthrough mode)
 
 ```bash
-# デフォルト: 127.0.0.1:8080 で起動
+# Default: starts on 127.0.0.1:8080
 rustgate
 
-# ポート指定
+# Custom port
 rustgate --port 9090
 ```
 
-### MITM モード（TLS 傍受）
+### MITM mode (TLS interception)
 
 ```bash
 rustgate --mitm
 ```
 
-初回起動時に CA 証明書が `~/.rustgate/ca.pem` に生成されます。
+On first startup, a CA certificate is generated at `~/.rustgate/ca.pem`.
 
-### CLI オプション
+### CLI options
 
 ```
 Usage: rustgate [OPTIONS]
 
 Options:
-      --host <HOST>  リッスンアドレス [default: 127.0.0.1]
-  -p, --port <PORT>  リッスンポート [default: 8080]
-      --mitm         MITM モード（TLS 傍受）を有効化
+      --host <HOST>  Listen address [default: 127.0.0.1]
+  -p, --port <PORT>  Listen port [default: 8080]
+      --mitm         Enable MITM mode (TLS interception)
   -h, --help         Print help
 ```
 
-### ログレベル
+### Log level
 
-環境変数 `RUST_LOG` で制御:
+Controlled with the `RUST_LOG` environment variable:
 
 ```bash
 RUST_LOG=rustgate=debug rustgate --mitm
 RUST_LOG=rustgate=trace rustgate --mitm
 ```
 
-## 動作確認
+## Quick verification
 
-### HTTP プロキシ
+### HTTP proxy
 
 ```bash
 curl -x http://localhost:8080 http://httpbin.org/get
 ```
 
-### HTTPS パススルー
+### HTTPS passthrough
 
 ```bash
 curl -x http://localhost:8080 https://httpbin.org/get
 ```
 
-### MITM（TLS 傍受）
+### MITM (TLS interception)
 
-CA 証明書を指定して HTTPS リクエスト:
+Send an HTTPS request with the CA certificate:
 
 ```bash
 curl --cacert ~/.rustgate/ca.pem -x http://localhost:8080 https://httpbin.org/get
 ```
 
-OS に CA 証明書をインストールすれば `--cacert` 不要:
+If you install the CA certificate into your OS trust store, `--cacert` is no longer needed:
 
 ```bash
 # macOS
@@ -123,18 +123,18 @@ sudo cp ~/.rustgate/ca.pem /usr/local/share/ca-certificates/rustgate.crt
 sudo update-ca-certificates
 ```
 
-## ライブラリとして使う
+## Use as a library
 
-crate 名は `rustgate-proxy`、lib 名は `rustgate` です。
+Crate name is `rustgate-proxy`; library name is `rustgate`.
 
 ```toml
 [dependencies]
 rustgate-proxy = "0.1"
 ```
 
-### カスタムハンドラ
+### Custom handler
 
-`RequestHandler` トレイトを実装することで、プロキシを通過するリクエスト/レスポンスを改変できます:
+Implement `RequestHandler` to inspect or modify requests and responses passing through the proxy:
 
 ```rust
 use rustgate::handler::{BoxBody, RequestHandler};
@@ -155,7 +155,7 @@ impl RequestHandler for MyHandler {
 }
 ```
 
-### プロキシサーバーの組み込み
+### Embed the proxy server
 
 ```rust
 use rustgate::cert::CertificateAuthority;
@@ -182,7 +182,213 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 公開モジュール
+### Public modules
+
+| Module | Description |
+|-----------|------|
+| `rustgate::proxy` | `ProxyState`, `handle_connection`, `parse_host_port` |
+| `rustgate::cert` | `CertificateAuthority`, `CertifiedKey` |
+| `rustgate::tls` | `make_tls_acceptor`, `connect_tls_upstream` |
+| `rustgate::handler` | `RequestHandler` trait, `LoggingHandler`, `BoxBody` |
+| `rustgate::error` | `ProxyError`, `Result` |
+
+## File layout
+
+```
+src/
+├── lib.rs        # Library entry point (exports modules)
+├── main.rs       # CLI entry point
+├── proxy.rs      # Proxy handlers (HTTP forward + CONNECT + MITM)
+├── cert.rs       # CA management and dynamic certificate generation
+├── tls.rs        # TLS termination and upstream TLS connection
+├── handler.rs    # RequestHandler trait definition
+└── error.rs      # Error type definitions
+tests/
+└── integration_test.rs  # Integration tests
+```
+
+## Notes
+
+- **Use MITM features only with consent from all parties involved.** Unauthorized interception may violate laws.
+- **Authentication and access control are not implemented.** Binding to non-loopback addresses (`0.0.0.0`, `::`, LAN IP, public IP, etc.) can expose the proxy on your network. RustGate warns at startup when binding to non-loopback addresses. Use trusted networks only, or restrict access with firewalls.
+- This tool is intended for security testing, debugging, and educational use.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+## Japanese (日本語)
+
+RustGate は Rust 製の MITM 対応 HTTP/HTTPS プロキシです。CLI ツールとしてもライブラリとしても利用できます。
+
+### 機能
+
+- **HTTP プロキシ** - 平文 HTTP リクエストを転送（hop-by-hop ヘッダ除去対応）
+- **CONNECT トンネリング** - HTTPS 通信を双方向バイトコピーでパススルー
+- **MITM モード** - TLS 終端による HTTPS 通信の傍受・閲覧
+- **動的証明書生成** - ドメインごとの CA 署名証明書を自動生成（キャッシュ付き）
+- **CA 証明書管理** - 初回起動時に `~/.rustgate/` へルート CA を自動生成・保存（秘密鍵は `0600`）
+- **リクエスト/レスポンス改変** - `RequestHandler` トレイトによるフック機構
+- **IPv6 対応** - `[::1]:443` 形式の CONNECT ターゲットを正しく処理
+- **セキュリティ配慮** - ログ出力時にクエリパラメータをマスク、非ループバック bind 時に警告
+
+### インストール
+
+```bash
+cargo install rustgate-proxy
+```
+
+### ソースからビルド
+
+```bash
+git clone https://github.com/uky007/RustGate-Proxy.git
+cd RustGate-Proxy
+cargo build --release
+```
+
+### アーキテクチャ
+
+```text
+Client ──TCP──> RustGate Proxy ──TCP/TLS──> Upstream Server
+                    |
+              +-----+-----+
+              | HTTP判定   |
+              +-----+------+
+           +--------+--------+
+           v        v        v
+        HTTP転送  CONNECT   CONNECT
+        (平文)   (トンネル)  (MITM)
+                  パススルー  TLS終端
+```
+
+### 使い方
+
+```bash
+# デフォルト: 127.0.0.1:8080
+rustgate
+
+# ポート指定
+rustgate --port 9090
+
+# MITM モード
+rustgate --mitm
+```
+
+初回起動時に `~/.rustgate/ca.pem` が生成されます。MITM 利用時は必要に応じて OS の信頼ストアに追加してください。
+
+### CLI オプション
+
+```text
+Usage: rustgate [OPTIONS]
+
+Options:
+      --host <HOST>  リッスンアドレス [default: 127.0.0.1]
+  -p, --port <PORT>  リッスンポート [default: 8080]
+      --mitm         MITM モード（TLS 傍受）を有効化
+  -h, --help         Print help
+```
+
+### ログレベル
+
+環境変数 `RUST_LOG` で制御できます:
+
+```bash
+RUST_LOG=rustgate=debug rustgate --mitm
+RUST_LOG=rustgate=trace rustgate --mitm
+```
+
+### 動作確認
+
+HTTP プロキシ:
+
+```bash
+curl -x http://localhost:8080 http://httpbin.org/get
+```
+
+HTTPS パススルー:
+
+```bash
+curl -x http://localhost:8080 https://httpbin.org/get
+```
+
+MITM（TLS 傍受）:
+
+```bash
+curl --cacert ~/.rustgate/ca.pem -x http://localhost:8080 https://httpbin.org/get
+```
+
+OS の信頼ストアに CA 証明書を追加すれば `--cacert` は不要です:
+
+```bash
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/.rustgate/ca.pem
+
+# Ubuntu/Debian
+sudo cp ~/.rustgate/ca.pem /usr/local/share/ca-certificates/rustgate.crt
+sudo update-ca-certificates
+```
+
+### ライブラリ利用
+
+```toml
+[dependencies]
+rustgate-proxy = "0.1"
+```
+
+公開ライブラリ名は `rustgate` です（crate 名は `rustgate-proxy`）。
+
+#### カスタムハンドラ
+
+```rust
+use rustgate::handler::{BoxBody, RequestHandler};
+use hyper::{Request, Response};
+
+struct MyHandler;
+
+impl RequestHandler for MyHandler {
+    fn handle_request(&self, req: &mut Request<BoxBody>) {
+        req.headers_mut()
+            .insert("X-Proxied-By", "RustGate".parse().unwrap());
+    }
+
+    fn handle_response(&self, res: &mut Response<BoxBody>) {
+        res.headers_mut()
+            .insert("X-Proxy", "RustGate".parse().unwrap());
+    }
+}
+```
+
+#### プロキシサーバーの組み込み
+
+```rust
+use rustgate::cert::CertificateAuthority;
+use rustgate::handler::LoggingHandler;
+use rustgate::proxy::{handle_connection, ProxyState};
+use std::sync::Arc;
+use tokio::net::TcpListener;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ca = Arc::new(CertificateAuthority::new().await?);
+    let state = Arc::new(ProxyState {
+        ca,
+        mitm: true,
+        handler: Arc::new(LoggingHandler),
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    loop {
+        let (stream, addr) = listener.accept().await?;
+        let state = state.clone();
+        tokio::spawn(handle_connection(stream, addr, state));
+    }
+}
+```
+
+#### 公開モジュール
 
 | モジュール | 説明 |
 |-----------|------|
@@ -192,9 +398,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `rustgate::handler` | `RequestHandler` トレイト, `LoggingHandler`, `BoxBody` |
 | `rustgate::error` | `ProxyError`, `Result` |
 
-## ファイル構成
+### ファイル構成
 
-```
+```text
 src/
 ├── lib.rs        # ライブラリエントリポイント（モジュール公開）
 ├── main.rs       # CLI エントリポイント
@@ -207,12 +413,8 @@ tests/
 └── integration_test.rs  # 統合テスト
 ```
 
-## 注意事項
+### 注意事項
 
-- **MITM 機能は、通信の当事者全員の同意を得た上で使用してください。** 無断での通信傍受は法律に抵触する可能性があります。
-- **認証・アクセス制御は未実装です。** ループバック以外のアドレス（`0.0.0.0`、`::`、LAN IP、グローバル IP 等）でバインドするとネットワーク上に公開されます。非ループバックアドレスへのバインド時は起動時に警告が表示されます。信頼できるネットワーク内でのみ使用するか、ファイアウォール等で適切にアクセスを制限してください。
-- このツールはセキュリティテスト、デバッグ、教育目的での使用を想定しています。
-
-## ライセンス
-
-[MIT](LICENSE)
+- MITM 機能は通信当事者全員の同意を得たうえで使用してください。
+- 認証・アクセス制御は未実装です。`0.0.0.0` や `::` で bind するとネットワーク公開される可能性があります。
+- 本ツールはセキュリティテスト、デバッグ、教育目的での利用を想定しています。
