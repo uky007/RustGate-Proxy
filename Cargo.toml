@@ -1,11 +1,11 @@
 [package]
 name = "rustgate-proxy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["uky <yuki.detective@gmail.com>"]
 license = "MIT"
 description = "MITM-capable HTTP/HTTPS proxy library and CLI"
-readme = "README.md"
+readme = "README.crates-io.md"
 repository = "https://github.com/uky007/RustGate-Proxy"
 keywords = ["proxy", "mitm", "http", "https", "tls"]
 categories = ["network-programming", "web-programming"]
