@@ -230,7 +230,14 @@ impl CertificateAuthority {
             len
         };
 
-        Ok((pos, pos + content_len))
+        let total_len = pos + content_len;
+        if total_len > data.len() {
+            return Err(ProxyError::Other(
+                "ASN.1 element extends beyond input data".into(),
+            ));
+        }
+
+        Ok((pos, total_len))
     }
 
     fn generate_domain_cert(&self, domain: &str) -> Result<CertifiedKey> {
