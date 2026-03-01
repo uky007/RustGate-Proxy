@@ -123,15 +123,65 @@ async fn test_ca_reload_preserves_identity() {
     let dir = tmp.path().to_path_buf();
 
     // First load: generates CA and saves to disk
-    let _ca1 = CertificateAuthority::with_dir(dir.clone()).await.unwrap();
+    let ca1 = CertificateAuthority::with_dir(dir.clone()).await.unwrap();
     let pem_after_create = std::fs::read_to_string(dir.join("ca.pem")).unwrap();
 
     // Second load: should reload the same CA from disk
-    let _ca2 = CertificateAuthority::with_dir(dir.clone()).await.unwrap();
+    let ca2 = CertificateAuthority::with_dir(dir.clone()).await.unwrap();
     let pem_after_reload = std::fs::read_to_string(dir.join("ca.pem")).unwrap();
 
     // CA cert on disk must not change between loads
     assert_eq!(pem_after_create, pem_after_reload);
+
+    // Leaf cert issued by reloaded CA must be verifiable by the original CA cert.
+    // Both CAs should produce certs with the same issuer info.
+    let leaf1 = ca1.get_or_create_cert("test.example.com").await.unwrap();
+    let leaf2 = ca2.get_or_create_cert("test.example.com").await.unwrap();
+
+    // Extract issuer bytes from both leaf certs (they must match)
+    let issuer1 = extract_issuer_der(&leaf1.cert_der);
+    let issuer2 = extract_issuer_der(&leaf2.cert_der);
+    assert_eq!(issuer1, issuer2, "Leaf certs should have the same issuer");
+}
+
+/// Extract the Issuer field (4th element in TBSCertificate) from DER-encoded cert.
+fn extract_issuer_der(der: &[u8]) -> Vec<u8> {
+    // Certificate -> SEQUENCE contents
+    let tbs_start = asn1_header_len(der);
+    let tbs_inner_start = tbs_start + asn1_header_len(&der[tbs_start..]);
+    let mut pos = tbs_inner_start;
+
+    // Skip 3 fields: version, serialNumber, signature algorithm
+    for _ in 0..3 {
+        pos += asn1_element_len(&der[pos..]);
+    }
+
+    // 4th field is Issuer
+    let issuer_len = asn1_element_len(&der[pos..]);
+    der[pos..pos + issuer_len].to_vec()
+}
+
+fn asn1_header_len(data: &[u8]) -> usize {
+    let len_byte = data[1];
+    if len_byte & 0x80 == 0 {
+        2
+    } else {
+        2 + (len_byte & 0x7f) as usize
+    }
+}
+
+fn asn1_element_len(data: &[u8]) -> usize {
+    let len_byte = data[1];
+    if len_byte & 0x80 == 0 {
+        2 + len_byte as usize
+    } else {
+        let num_bytes = (len_byte & 0x7f) as usize;
+        let mut len = 0usize;
+        for &b in &data[2..2 + num_bytes] {
+            len = (len << 8) | b as usize;
+        }
+        2 + num_bytes + len
+    }
 }
 
 #[test]

@@ -132,9 +132,105 @@ impl CertificateAuthority {
 
         let cert_pem = tokio::fs::read_to_string(cert_path).await?;
         let params = CertificateParams::from_ca_cert_pem(&cert_pem)?;
+
+        // Verify the private key matches the certificate's public key.
+        // Re-sign with the loaded key and check that the public key in
+        // the resulting cert matches the original.
         let cert = params.self_signed(&key)?;
 
+        let original_der = Self::pem_to_der(&cert_pem)?;
+        let regenerated_der = cert.der().to_vec();
+        let original_spki = Self::extract_spki(&original_der)?;
+        let regenerated_spki = Self::extract_spki(&regenerated_der)?;
+        if original_spki != regenerated_spki {
+            return Err(ProxyError::Other(
+                "CA certificate and private key do not match: \
+                 public key in ca.pem differs from ca-key.pem"
+                    .into(),
+            ));
+        }
+
         Ok((cert, key))
+    }
+
+    /// Extract the raw PEM body into DER bytes.
+    fn pem_to_der(pem_str: &str) -> Result<Vec<u8>> {
+        let mut reader = std::io::BufReader::new(pem_str.as_bytes());
+        let certs = rustls_pemfile::certs(&mut reader)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        certs
+            .into_iter()
+            .next()
+            .map(|c| c.to_vec())
+            .ok_or_else(|| ProxyError::Other("No certificate found in PEM".into()))
+    }
+
+    /// Extract SubjectPublicKeyInfo bytes from a DER-encoded X.509 certificate.
+    /// Uses minimal ASN.1 parsing: Certificate -> TBSCertificate -> SPKI (7th field).
+    fn extract_spki(der: &[u8]) -> Result<Vec<u8>> {
+        // Certificate is a SEQUENCE containing TBSCertificate, signatureAlgorithm, signature
+        let tbs = Self::asn1_sequence_contents(der)?;
+        // TBSCertificate is a SEQUENCE: version, serialNumber, signature, issuer,
+        //   validity, subject, subjectPublicKeyInfo, ...
+        let tbs_inner = Self::asn1_sequence_contents(tbs)?;
+
+        let mut pos = 0;
+        // Skip 6 fields: version (explicit tag [0]), serial, sigAlg, issuer, validity, subject
+        for i in 0..6 {
+            if pos >= tbs_inner.len() {
+                return Err(ProxyError::Other(
+                    format!("Unexpected end of TBSCertificate at field {i}"),
+                ));
+            }
+            let (_, field_len) = Self::asn1_read_tag_and_length(&tbs_inner[pos..])?;
+            pos += field_len;
+        }
+
+        // The 7th field is SubjectPublicKeyInfo
+        if pos >= tbs_inner.len() {
+            return Err(ProxyError::Other(
+                "SubjectPublicKeyInfo not found in certificate".into(),
+            ));
+        }
+        let (_, spki_len) = Self::asn1_read_tag_and_length(&tbs_inner[pos..])?;
+        Ok(tbs_inner[pos..pos + spki_len].to_vec())
+    }
+
+    /// Parse the contents (value bytes) of an ASN.1 SEQUENCE.
+    fn asn1_sequence_contents(data: &[u8]) -> Result<&[u8]> {
+        if data.is_empty() || (data[0] & 0x1f) != 0x10 {
+            return Err(ProxyError::Other("Expected ASN.1 SEQUENCE".into()));
+        }
+        let (header_len, total_len) = Self::asn1_read_tag_and_length(data)?;
+        let content_len = total_len - header_len;
+        Ok(&data[header_len..header_len + content_len])
+    }
+
+    /// Read ASN.1 tag and length, returning (header_size, total_element_size).
+    fn asn1_read_tag_and_length(data: &[u8]) -> Result<(usize, usize)> {
+        if data.len() < 2 {
+            return Err(ProxyError::Other("ASN.1 data too short".into()));
+        }
+        let mut pos = 1; // skip tag byte
+        let length_byte = data[pos];
+        pos += 1;
+
+        let content_len = if length_byte & 0x80 == 0 {
+            length_byte as usize
+        } else {
+            let num_bytes = (length_byte & 0x7f) as usize;
+            if pos + num_bytes > data.len() {
+                return Err(ProxyError::Other("ASN.1 length overflow".into()));
+            }
+            let mut len = 0usize;
+            for &b in &data[pos..pos + num_bytes] {
+                len = (len << 8) | b as usize;
+            }
+            pos += num_bytes;
+            len
+        };
+
+        Ok((pos, pos + content_len))
     }
 
     fn generate_domain_cert(&self, domain: &str) -> Result<CertifiedKey> {
