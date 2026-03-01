@@ -1,5 +1,7 @@
 # RustGate
 
+[![Crates.io](https://img.shields.io/crates/v/rustgate-proxy.svg)](https://crates.io/crates/rustgate-proxy)
+[![docs.rs](https://docs.rs/rustgate-proxy/badge.svg)](https://docs.rs/rustgate-proxy)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 MITM 対応の HTTP/HTTPS プロキシ。CLI ツールとしてもライブラリ（crate 名: `rustgate-proxy`、lib 名: `rustgate`）としても利用可能。
