@@ -27,7 +27,7 @@ http = "1"
 tokio-rustls = "0.26"
 rustls = "0.23"
 rustls-pemfile = "2"
-rcgen = "0.13"
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

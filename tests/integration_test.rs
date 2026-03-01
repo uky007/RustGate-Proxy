@@ -117,6 +117,23 @@ async fn test_connect_tunnel_returns_200() {
     assert_eq!(res.status(), 200);
 }
 
+#[tokio::test]
+async fn test_ca_reload_preserves_identity() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+
+    // First load: generates CA and saves to disk
+    let _ca1 = CertificateAuthority::with_dir(dir.clone()).await.unwrap();
+    let pem_after_create = std::fs::read_to_string(dir.join("ca.pem")).unwrap();
+
+    // Second load: should reload the same CA from disk
+    let _ca2 = CertificateAuthority::with_dir(dir.clone()).await.unwrap();
+    let pem_after_reload = std::fs::read_to_string(dir.join("ca.pem")).unwrap();
+
+    // CA cert on disk must not change between loads
+    assert_eq!(pem_after_create, pem_after_reload);
+}
+
 #[test]
 fn test_parse_host_port_ipv4() {
     let (host, port) = rustgate::proxy::parse_host_port("example.com:8080");

@@ -90,7 +90,13 @@ async fn handle_forward(
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
-    parts.uri = path.parse().unwrap();
+    parts.uri = match path.parse() {
+        Ok(uri) => uri,
+        Err(_) => {
+            warn!("Invalid path: {path}");
+            return Ok(bad_request("Invalid request URI"));
+        }
+    };
     strip_hop_by_hop_headers(&mut parts.headers);
 
     let mut forwarded_req = Request::from_parts(parts, boxed_body(body));

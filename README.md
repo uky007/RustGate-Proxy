@@ -42,7 +42,7 @@ cargo install rustgate-proxy
 
 ```bash
 git clone https://github.com/uky007/RustGate-Proxy.git
-cd rustgate
+cd RustGate-Proxy
 cargo build --release
 ```
 

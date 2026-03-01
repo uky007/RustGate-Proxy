@@ -130,19 +130,8 @@ impl CertificateAuthority {
         let key_pem = tokio::fs::read_to_string(key_path).await?;
         let key = KeyPair::from_pem(&key_pem)?;
 
-        // Re-generate the CA cert from saved key with same params
         let cert_pem = tokio::fs::read_to_string(cert_path).await?;
-        let _ = cert_pem; // We just verify it exists; re-create with same params
-        let mut params = CertificateParams::default();
-        let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, "RustGate CA");
-        dn.push(DnType::OrganizationName, "RustGate");
-        params.distinguished_name = dn;
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params.key_usages = vec![
-            KeyUsagePurpose::KeyCertSign,
-            KeyUsagePurpose::CrlSign,
-        ];
+        let params = CertificateParams::from_ca_cert_pem(&cert_pem)?;
         let cert = params.self_signed(&key)?;
 
         Ok((cert, key))
