@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosure
+    url: https://github.com/uky007/RustGate-Proxy/security/advisories/new
+    about: Please report security vulnerabilities privately.
+  - name: Documentation
+    url: https://docs.rs/rustgate-proxy
+    about: Read API documentation on docs.rs.
