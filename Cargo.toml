@@ -2,6 +2,7 @@
 name = "rustgate-proxy"
 version = "0.1.0"
 edition = "2021"
+authors = ["uky <yuki.detective@gmail.com>"]
 license = "MIT"
 description = "MITM-capable HTTP/HTTPS proxy library and CLI"
 readme = "README.md"
