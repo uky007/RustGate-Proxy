@@ -8,6 +8,9 @@ pub enum ProxyError {
     Tls(rustls::Error),
     Rcgen(rcgen::Error),
     AddrParse(std::net::AddrParseError),
+    WebSocket(String),
+    Serde(serde_json::Error),
+    Protocol(String),
     Other(String),
 }
 
@@ -20,6 +23,9 @@ impl fmt::Display for ProxyError {
             ProxyError::Tls(e) => write!(f, "TLS error: {e}"),
             ProxyError::Rcgen(e) => write!(f, "Certificate error: {e}"),
             ProxyError::AddrParse(e) => write!(f, "Address parse error: {e}"),
+            ProxyError::WebSocket(e) => write!(f, "WebSocket error: {e}"),
+            ProxyError::Serde(e) => write!(f, "Serialization error: {e}"),
+            ProxyError::Protocol(e) => write!(f, "Protocol error: {e}"),
             ProxyError::Other(e) => write!(f, "{e}"),
         }
     }
@@ -60,6 +66,18 @@ impl From<rcgen::Error> for ProxyError {
 impl From<std::net::AddrParseError> for ProxyError {
     fn from(e: std::net::AddrParseError) -> Self {
         ProxyError::AddrParse(e)
+    }
+}
+
+impl From<serde_json::Error> for ProxyError {
+    fn from(e: serde_json::Error) -> Self {
+        ProxyError::Serde(e)
+    }
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for ProxyError {
+    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
+        ProxyError::WebSocket(e.to_string())
     }
 }
 

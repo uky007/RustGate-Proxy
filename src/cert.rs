@@ -36,7 +36,21 @@ impl CertificateAuthority {
         let cert_path = dir.join("ca.pem");
         let key_path = dir.join("ca-key.pem");
 
-        let (ca_cert, ca_key) = if cert_path.exists() && key_path.exists() {
+        let cert_exists = cert_path.exists();
+        let key_exists = key_path.exists();
+
+        // Partial CA state is fatal — prevent silent rekey
+        if cert_exists != key_exists {
+            return Err(ProxyError::Other(format!(
+                "Partial CA state in {}: {} exists but {} is missing. \
+                 Restore the missing file or remove both to reinitialize.",
+                dir.display(),
+                if cert_exists { "ca.pem" } else { "ca-key.pem" },
+                if cert_exists { "ca-key.pem" } else { "ca.pem" },
+            )));
+        }
+
+        let (ca_cert, ca_key) = if cert_exists {
             info!("Loading existing CA certificate from {}", dir.display());
             Self::load_ca(&cert_path, &key_path).await?
         } else {
@@ -238,6 +252,47 @@ impl CertificateAuthority {
         }
 
         Ok((pos, total_len))
+    }
+
+    /// Generate a client certificate signed by this CA (EKU: ClientAuth).
+    /// Returns (cert_pem, key_pem) as Strings.
+    pub fn generate_client_cert(&self, cn: &str) -> Result<(String, String)> {
+        let mut params = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, cn);
+        dn.push(DnType::OrganizationName, "RustGate");
+        params.distinguished_name = dn;
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+
+        let key = KeyPair::generate()?;
+        let cert = params.signed_by(&key, &self.ca_cert, &self.ca_key)?;
+
+        Ok((cert.pem(), key.serialize_pem()))
+    }
+
+    /// Generate a server certificate signed by this CA (EKU: ServerAuth).
+    pub fn generate_server_cert(&self, host: &str) -> Result<CertifiedKey> {
+        let mut params = CertificateParams::new(vec![host.to_string()])?;
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, host);
+        params.distinguished_name = dn;
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            params.subject_alt_names = vec![SanType::IpAddress(ip)];
+        }
+
+        let key = KeyPair::generate()?;
+        let cert = params.signed_by(&key, &self.ca_cert, &self.ca_key)?;
+
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivatePkcs8KeyDer::from(key.serialize_der());
+        Ok(CertifiedKey { cert_der, key_der })
+    }
+
+    /// Return the CA certificate in DER format (for building RootCertStore).
+    pub fn ca_cert_der(&self) -> CertificateDer<'static> {
+        CertificateDer::from(self.ca_cert.der().to_vec())
     }
 
     fn generate_domain_cert(&self, domain: &str) -> Result<CertifiedKey> {
