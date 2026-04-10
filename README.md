@@ -4,137 +4,122 @@
 [![docs.rs](https://docs.rs/rustgate-proxy/badge.svg)](https://docs.rs/rustgate-proxy)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-MITM-capable HTTP/HTTPS proxy written in Rust. It can be used both as a CLI tool and as a library (crate: `rustgate-proxy`, lib: `rustgate`).
+MITM-capable HTTP/HTTPS proxy with WebSocket-based C2 tunneling, written in Rust. It can be used as a CLI tool and as a library (crate: `rustgate-proxy`, lib: `rustgate`).
+
+> **WARNING:** This tool is for authorized security research only. Unauthorized use may violate applicable laws. Use responsibly.
 
 ## Features
+
+### Proxy Mode
 
 - **HTTP Proxy** - Forwards plain HTTP requests (with hop-by-hop header stripping)
 - **CONNECT Tunneling** - HTTPS passthrough via bidirectional byte relay
 - **MITM Mode** - TLS termination for HTTPS interception and inspection
 - **Dynamic Certificate Generation** - Per-domain CA-signed cert generation with caching
-- **CA Certificate Management** - Auto-generates and stores root CA in `~/.rustgate/` on first run (private key set to `0600`)
+- **CA Certificate Management** - Auto-generates and stores root CA in `~/.rustgate/`
 - **Request/Response Rewriting** - Hook mechanism via the `RequestHandler` trait
-- **IPv6 Support** - Correctly handles CONNECT targets like `[::1]:443`
-- **Security Considerations** - Masks query parameters in logs and warns on non-loopback bind
 
-## Architecture
+### C2 Mode (new in v0.2.0)
 
-```
-Client ──TCP──> RustGate Proxy ──TCP/TLS──> Upstream Server
-                    |
-              +-----+-----+
-              | HTTP Router |
-              +-----+------+
-           +--------+--------+
-           v        v        v
-      HTTP Forward CONNECT   CONNECT
-        (Plain)   (Tunnel)   (MITM)
-                 Passthrough TLS Termination
-```
+- **WebSocket C2 Server** - Accepts client connections over mTLS-authenticated WebSocket
+- **WebSocket C2 Client** - Connects to server, receives commands, creates tunnels
+- **SOCKS5 Proxy Tunneling** - Operator-initiated SOCKS5 listener on client, traffic relayed through server
+- **Reverse TCP Tunneling** - Server binds a port, forwards connections back to client's local service
+- **mTLS Authentication** - Mutual TLS with separate CA for C2 (SHA-256 certificate fingerprint identity)
+- **Client Certificate Generation** - `gen-client-cert` subcommand for mTLS credential provisioning
+
+### Security Guardrails
+
+- Tunnel creation commands only (no shell execution)
+- Operator-authorized tunnel IDs with command-specific acknowledgements (`SocksReady`, `ReverseTunnelReady`)
+- Channel ID parity validation (client=odd, server=even) with duplicate rejection
+- Handshake timeouts (15s TLS + 10s WS) with concurrency limiting
+- Session eviction with shutdown signaling for stale/reconnecting clients
+- Per-tunnel lifecycle management (stop closes listeners, channels, and relays)
+- Bounded connect/readiness timeouts on all async paths
+- Reverse tunnel listeners bound to loopback only
+- Partial CA state detection (fail-closed)
+- Separate CA for C2 mode (`--ca-dir` required)
 
 ## Installation
-
-### From crates.io
 
 ```bash
 cargo install rustgate-proxy
 ```
 
-### Build from source
-
-```bash
-git clone https://github.com/uky007/RustGate-Proxy.git
-cd RustGate-Proxy
-cargo build --release
-```
-
 ## Usage
 
-### Basic (passthrough mode)
+### Proxy Mode
 
 ```bash
 # Default: starts on 127.0.0.1:8080
 rustgate
 
-# Custom port
-rustgate --port 9090
+# MITM mode
+rustgate --mitm
+
+# Custom host/port
+rustgate --host 0.0.0.0 --port 9090 --mitm
 ```
 
-### MITM mode (TLS interception)
+### C2 Server
 
 ```bash
-rustgate --mitm
+rustgate server --server-name myserver.example.com --ca-dir ./my-ca --port 4443
 ```
 
-On first startup, a CA certificate is generated at `~/.rustgate/ca.pem`.
-
-### CLI options
+The server generates a CA on first run (if `--ca-dir` is empty), listens for mTLS WebSocket clients, and provides an interactive stdin console:
 
 ```
-Usage: rustgate [OPTIONS]
+list                                  - List connected clients
+socks <client> <port>                 - Start SOCKS5 on client
+reverse <client> <remote_port> <target> - Reverse tunnel
+stop <client> <tunnel_id>             - Stop a tunnel
+```
 
-Options:
-      --host <HOST>  Listen address [default: 127.0.0.1]
-  -p, --port <PORT>  Listen port [default: 8080]
-      --mitm         Enable MITM mode (TLS interception)
-  -h, --help         Print help
+### C2 Client
+
+```bash
+rustgate client \
+  --server-url wss://myserver.example.com:4443 \
+  --cert ./certs/client.pem \
+  --key ./certs/client-key.pem \
+  --ca-cert ./my-ca/ca.pem
+```
+
+### Generate Client Certificate
+
+```bash
+rustgate gen-client-cert --cn my-client --out-dir ./certs --ca-dir ./my-ca
 ```
 
 ### Log level
 
-Controlled with the `RUST_LOG` environment variable:
-
 ```bash
 RUST_LOG=rustgate=debug rustgate --mitm
-RUST_LOG=rustgate=trace rustgate --mitm
 ```
 
-## Quick verification
-
-### HTTP proxy
+## Quick Verification (Proxy)
 
 ```bash
+# HTTP proxy
 curl -x http://localhost:8080 http://httpbin.org/get
-```
 
-### HTTPS passthrough
-
-```bash
+# HTTPS passthrough
 curl -x http://localhost:8080 https://httpbin.org/get
-```
 
-### MITM (TLS interception)
-
-Send an HTTPS request with the CA certificate:
-
-```bash
+# MITM
 curl --cacert ~/.rustgate/ca.pem -x http://localhost:8080 https://httpbin.org/get
 ```
 
-If you install the CA certificate into your OS trust store, `--cacert` is no longer needed:
-
-```bash
-# macOS
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain ~/.rustgate/ca.pem
-
-# Ubuntu/Debian
-sudo cp ~/.rustgate/ca.pem /usr/local/share/ca-certificates/rustgate.crt
-sudo update-ca-certificates
-```
-
-## Use as a library
-
-Crate name is `rustgate-proxy`; library name is `rustgate`.
+## Use as a Library
 
 ```toml
 [dependencies]
-rustgate-proxy = "0.1"
+rustgate-proxy = "0.2"
 ```
 
 ### Custom handler
-
-Implement `RequestHandler` to inspect or modify requests and responses passing through the proxy:
 
 ```rust
 use rustgate::handler::{BoxBody, RequestHandler};
@@ -151,33 +136,6 @@ impl RequestHandler for MyHandler {
     fn handle_response(&self, res: &mut Response<BoxBody>) {
         res.headers_mut()
             .insert("X-Proxy", "RustGate".parse().unwrap());
-    }
-}
-```
-
-### Embed the proxy server
-
-```rust
-use rustgate::cert::CertificateAuthority;
-use rustgate::handler::LoggingHandler;
-use rustgate::proxy::{handle_connection, ProxyState};
-use std::sync::Arc;
-use tokio::net::TcpListener;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ca = Arc::new(CertificateAuthority::new().await?);
-    let state = Arc::new(ProxyState {
-        ca,
-        mitm: true,
-        handler: Arc::new(LoggingHandler),
-    });
-
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let state = state.clone();
-        tokio::spawn(handle_connection(stream, addr, state));
     }
 }
 ```
@@ -188,233 +146,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-----------|------|
 | `rustgate::proxy` | `ProxyState`, `handle_connection`, `parse_host_port` |
 | `rustgate::cert` | `CertificateAuthority`, `CertifiedKey` |
-| `rustgate::tls` | `make_tls_acceptor`, `connect_tls_upstream` |
+| `rustgate::tls` | `make_tls_acceptor`, `connect_tls_upstream`, mTLS config |
 | `rustgate::handler` | `RequestHandler` trait, `LoggingHandler`, `BoxBody` |
 | `rustgate::error` | `ProxyError`, `Result` |
-
-## File layout
-
-```
-src/
-├── lib.rs        # Library entry point (exports modules)
-├── main.rs       # CLI entry point
-├── proxy.rs      # Proxy handlers (HTTP forward + CONNECT + MITM)
-├── cert.rs       # CA management and dynamic certificate generation
-├── tls.rs        # TLS termination and upstream TLS connection
-├── handler.rs    # RequestHandler trait definition
-└── error.rs      # Error type definitions
-tests/
-└── integration_test.rs  # Integration tests
-```
+| `rustgate::c2` | C2 server and client modules |
+| `rustgate::protocol` | WebSocket command/response protocol |
+| `rustgate::ws` | WebSocket helpers and channel multiplexing |
+| `rustgate::socks5` | Minimal SOCKS5 server (CONNECT only) |
 
 ## Notes
 
-- **Use MITM features only with consent from all parties involved.** Unauthorized interception may violate laws.
-- **Authentication and access control are not implemented.** Binding to non-loopback addresses (`0.0.0.0`, `::`, LAN IP, public IP, etc.) can expose the proxy on your network. RustGate warns at startup when binding to non-loopback addresses. Use trusted networks only, or restrict access with firewalls.
-- This tool is intended for security testing, debugging, and educational use.
+- **Use MITM and C2 features only with proper authorization.** Unauthorized interception or tunneling may violate laws.
+- **Proxy mode has no authentication.** Binding to non-loopback addresses can expose it on your network.
+- **C2 mode requires mTLS.** Both server and client must present certificates signed by the same CA.
+- This tool is intended for security research, testing, and educational use.
 
 ## License
 
 [MIT](LICENSE)
-
----
-
-## Japanese (日本語)
-
-RustGate は Rust 製の MITM 対応 HTTP/HTTPS プロキシです。CLI ツールとしてもライブラリとしても利用できます。
-
-### 機能
-
-- **HTTP プロキシ** - 平文 HTTP リクエストを転送（hop-by-hop ヘッダ除去対応）
-- **CONNECT トンネリング** - HTTPS 通信を双方向バイトコピーでパススルー
-- **MITM モード** - TLS 終端による HTTPS 通信の傍受・閲覧
-- **動的証明書生成** - ドメインごとの CA 署名証明書を自動生成（キャッシュ付き）
-- **CA 証明書管理** - 初回起動時に `~/.rustgate/` へルート CA を自動生成・保存（秘密鍵は `0600`）
-- **リクエスト/レスポンス改変** - `RequestHandler` トレイトによるフック機構
-- **IPv6 対応** - `[::1]:443` 形式の CONNECT ターゲットを正しく処理
-- **セキュリティ配慮** - ログ出力時にクエリパラメータをマスク、非ループバック bind 時に警告
-
-### インストール
-
-```bash
-cargo install rustgate-proxy
-```
-
-### ソースからビルド
-
-```bash
-git clone https://github.com/uky007/RustGate-Proxy.git
-cd RustGate-Proxy
-cargo build --release
-```
-
-### アーキテクチャ
-
-```text
-Client ──TCP──> RustGate Proxy ──TCP/TLS──> Upstream Server
-                    |
-              +-----+-----+
-              | HTTP判定   |
-              +-----+------+
-           +--------+--------+
-           v        v        v
-        HTTP転送  CONNECT   CONNECT
-        (平文)   (トンネル)  (MITM)
-                  パススルー  TLS終端
-```
-
-### 使い方
-
-```bash
-# デフォルト: 127.0.0.1:8080
-rustgate
-
-# ポート指定
-rustgate --port 9090
-
-# MITM モード
-rustgate --mitm
-```
-
-初回起動時に `~/.rustgate/ca.pem` が生成されます。MITM 利用時は必要に応じて OS の信頼ストアに追加してください。
-
-### CLI オプション
-
-```text
-Usage: rustgate [OPTIONS]
-
-Options:
-      --host <HOST>  リッスンアドレス [default: 127.0.0.1]
-  -p, --port <PORT>  リッスンポート [default: 8080]
-      --mitm         MITM モード（TLS 傍受）を有効化
-  -h, --help         Print help
-```
-
-### ログレベル
-
-環境変数 `RUST_LOG` で制御できます:
-
-```bash
-RUST_LOG=rustgate=debug rustgate --mitm
-RUST_LOG=rustgate=trace rustgate --mitm
-```
-
-### 動作確認
-
-HTTP プロキシ:
-
-```bash
-curl -x http://localhost:8080 http://httpbin.org/get
-```
-
-HTTPS パススルー:
-
-```bash
-curl -x http://localhost:8080 https://httpbin.org/get
-```
-
-MITM（TLS 傍受）:
-
-```bash
-curl --cacert ~/.rustgate/ca.pem -x http://localhost:8080 https://httpbin.org/get
-```
-
-OS の信頼ストアに CA 証明書を追加すれば `--cacert` は不要です:
-
-```bash
-# macOS
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain ~/.rustgate/ca.pem
-
-# Ubuntu/Debian
-sudo cp ~/.rustgate/ca.pem /usr/local/share/ca-certificates/rustgate.crt
-sudo update-ca-certificates
-```
-
-### ライブラリ利用
-
-```toml
-[dependencies]
-rustgate-proxy = "0.1"
-```
-
-公開ライブラリ名は `rustgate` です（crate 名は `rustgate-proxy`）。
-
-#### カスタムハンドラ
-
-```rust
-use rustgate::handler::{BoxBody, RequestHandler};
-use hyper::{Request, Response};
-
-struct MyHandler;
-
-impl RequestHandler for MyHandler {
-    fn handle_request(&self, req: &mut Request<BoxBody>) {
-        req.headers_mut()
-            .insert("X-Proxied-By", "RustGate".parse().unwrap());
-    }
-
-    fn handle_response(&self, res: &mut Response<BoxBody>) {
-        res.headers_mut()
-            .insert("X-Proxy", "RustGate".parse().unwrap());
-    }
-}
-```
-
-#### プロキシサーバーの組み込み
-
-```rust
-use rustgate::cert::CertificateAuthority;
-use rustgate::handler::LoggingHandler;
-use rustgate::proxy::{handle_connection, ProxyState};
-use std::sync::Arc;
-use tokio::net::TcpListener;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ca = Arc::new(CertificateAuthority::new().await?);
-    let state = Arc::new(ProxyState {
-        ca,
-        mitm: true,
-        handler: Arc::new(LoggingHandler),
-    });
-
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let state = state.clone();
-        tokio::spawn(handle_connection(stream, addr, state));
-    }
-}
-```
-
-#### 公開モジュール
-
-| モジュール | 説明 |
-|-----------|------|
-| `rustgate::proxy` | `ProxyState`, `handle_connection`, `parse_host_port` |
-| `rustgate::cert` | `CertificateAuthority`, `CertifiedKey` |
-| `rustgate::tls` | `make_tls_acceptor`, `connect_tls_upstream` |
-| `rustgate::handler` | `RequestHandler` トレイト, `LoggingHandler`, `BoxBody` |
-| `rustgate::error` | `ProxyError`, `Result` |
-
-### ファイル構成
-
-```text
-src/
-├── lib.rs        # ライブラリエントリポイント（モジュール公開）
-├── main.rs       # CLI エントリポイント
-├── proxy.rs      # プロキシハンドラ（HTTP転送 + CONNECT + MITM）
-├── cert.rs       # CA証明書管理、動的証明書生成
-├── tls.rs        # TLS終端、upstream TLS接続
-├── handler.rs    # RequestHandler トレイト定義
-└── error.rs      # エラー型定義
-tests/
-└── integration_test.rs  # 統合テスト
-```
-
-### 注意事項
-
-- MITM 機能は通信当事者全員の同意を得たうえで使用してください。
-- 認証・アクセス制御は未実装です。`0.0.0.0` や `::` で bind するとネットワーク公開される可能性があります。
-- 本ツールはセキュリティテスト、デバッグ、教育目的での利用を想定しています。
