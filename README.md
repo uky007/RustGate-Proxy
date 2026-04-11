@@ -18,8 +18,9 @@ MITM-capable HTTP/HTTPS proxy with WebSocket-based C2 tunneling, written in Rust
 - **Dynamic Certificate Generation** - Per-domain CA-signed cert generation with caching
 - **CA Certificate Management** - Auto-generates and stores root CA in `~/.rustgate/`
 - **Request/Response Rewriting** - Hook mechanism via the `RequestHandler` trait
+- **TUI Interceptor** (v0.3.0) - Interactive Burp-style request/response inspection, editing, and drop
 
-### C2 Mode (new in v0.2.0)
+### C2 Mode (v0.2.0)
 
 - **WebSocket C2 Server** - Accepts client connections over mTLS-authenticated WebSocket
 - **WebSocket C2 Client** - Connects to server, receives commands, creates tunnels
@@ -61,6 +62,34 @@ rustgate --mitm
 # Custom host/port
 rustgate --host 0.0.0.0 --port 9090 --mitm
 ```
+
+### Intercept Mode (new in v0.3.0)
+
+```bash
+rustgate --mitm --intercept
+```
+
+Opens a TUI for interactive request/response inspection and editing:
+
+```
+┌─ RustGate Interceptor ─────────────────────────────────┐
+│ [INTERCEPT ON]  Pending: 1  History: 23                │
+├─────────────────────────┬──────────────────────────────┤
+│  # │ Method │ Path      │  ▶ PENDING REQUEST           │
+│  1 │ GET    │ /api/user │  GET /api/data HTTP/1.1      │
+│▸ 2 │ POST   │ /api/data │  Host: example.com           │
+│    │        │           │  Authorization: Bearer xxx   │
+│    │ History list       │  Detail / pending view       │
+├─────────────────────────┴──────────────────────────────┤
+│ [f]orward  [d]rop  [e]dit  [space] toggle  [q]uit     │
+└────────────────────────────────────────────────────────┘
+```
+
+- **f** — Forward request/response as-is
+- **d** — Drop (block the request or suppress the response)
+- **e** — Edit headers and body in an inline text editor (Ctrl+S to save)
+- **space** — Toggle interception on/off at runtime
+- **q** — Quit TUI (proxy continues in passthrough mode)
 
 ### C2 Server
 
@@ -116,7 +145,7 @@ curl --cacert ~/.rustgate/ca.pem -x http://localhost:8080 https://httpbin.org/ge
 
 ```toml
 [dependencies]
-rustgate-proxy = "0.2"
+rustgate-proxy = "0.3"
 ```
 
 ### Custom handler

@@ -18,8 +18,9 @@ MITM-capable HTTP/HTTPS proxy with WebSocket-based C2 tunneling, written in Rust
 - **Dynamic Certificate Generation** - Per-domain CA-signed cert generation with caching
 - **CA Certificate Management** - Auto-generates and stores root CA in `~/.rustgate/`
 - **Request/Response Rewriting** - Hook mechanism via the `RequestHandler` trait
+- **TUI Interceptor** (v0.3.0) - Interactive Burp-style request/response inspection, editing, and drop
 
-### C2 Mode (new in v0.2.0)
+### C2 Mode (v0.2.0)
 
 - **WebSocket C2 Server** - Accepts client connections over mTLS-authenticated WebSocket
 - **WebSocket C2 Client** - Connects to server, receives commands, creates tunnels
@@ -69,7 +70,7 @@ rustgate gen-client-cert --cn my-client --out-dir ./certs --ca-dir ./my-ca
 
 ```toml
 [dependencies]
-rustgate-proxy = "0.2"
+rustgate-proxy = "0.3"
 ```
 
 ## Notes
