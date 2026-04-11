@@ -94,7 +94,7 @@ impl RequestHandler for InterceptHandler {
         };
 
         // Backpressure: block until queue has space (bounded channel)
-        let send_result = tokio::task::block_in_place(|| self.tx.send(item));
+        let send_result = tokio::task::block_in_place(|| self.tx.send(item).map_err(Box::new));
         match send_result {
             Ok(()) => {}
             Err(_) => {
@@ -156,7 +156,7 @@ impl RequestHandler for InterceptHandler {
             reply: reply_tx,
         };
 
-        let send_result = tokio::task::block_in_place(|| self.tx.send(item));
+        let send_result = tokio::task::block_in_place(|| self.tx.send(item).map_err(Box::new));
         match send_result {
             Ok(()) => {}
             Err(_) => {
