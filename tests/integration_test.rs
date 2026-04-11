@@ -57,6 +57,7 @@ async fn spawn_proxy(mitm: bool) -> (String, tokio::task::JoinHandle<()>, TempDi
     let state = Arc::new(ProxyState {
         ca,
         mitm,
+        intercept: false,
         handler: Arc::new(LoggingHandler),
     });
 

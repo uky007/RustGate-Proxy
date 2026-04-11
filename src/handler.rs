@@ -42,3 +42,56 @@ where
 {
     body.boxed()
 }
+
+/// Create a BoxBody from Bytes (fully buffered).
+pub fn full_boxed_body(bytes: Bytes) -> BoxBody {
+    http_body_util::Full::new(bytes)
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+/// Extract body bytes from a request, replacing with empty body.
+pub fn extract_body_bytes(req: &mut Request<BoxBody>) -> Bytes {
+    let body = std::mem::replace(req.body_mut(), empty_boxed_body());
+    // The body should already be a Full<Bytes> after pre-collection in proxy.rs.
+    // We try to extract it synchronously via a blocking poll.
+    // Since we pre-collect in proxy, the body is always ready.
+    futures_util::FutureExt::now_or_never(async {
+        body.collect().await.map(|c| c.to_bytes()).unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+/// Extract body bytes from a response, replacing with empty body.
+pub fn extract_response_body_bytes(res: &mut Response<BoxBody>) -> Bytes {
+    let body = std::mem::replace(res.body_mut(), empty_boxed_body());
+    futures_util::FutureExt::now_or_never(async {
+        body.collect().await.map(|c| c.to_bytes()).unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+/// Put bytes back as the request body.
+pub fn put_body_back(req: &mut Request<BoxBody>, bytes: Bytes) {
+    *req.body_mut() = full_boxed_body(bytes);
+}
+
+/// Put bytes back as the response body.
+pub fn put_response_body_back(res: &mut Response<BoxBody>, bytes: Bytes) {
+    *res.body_mut() = full_boxed_body(bytes);
+}
+
+/// Create an empty BoxBody.
+pub fn empty_boxed_body() -> BoxBody {
+    http_body_util::Empty::new()
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+/// Marker type: when present in request extensions, the request was dropped by the interceptor.
+#[derive(Clone)]
+pub struct Dropped;
+
+/// Marker type: when present in extensions, the body has been pre-buffered for interception.
+#[derive(Clone)]
+pub struct Buffered;

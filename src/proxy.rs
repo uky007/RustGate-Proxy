@@ -1,6 +1,6 @@
 use crate::cert::CertificateAuthority;
 use crate::error::ProxyError;
-use crate::handler::{boxed_body, BoxBody, RequestHandler};
+use crate::handler::{boxed_body, full_boxed_body, Buffered, BoxBody, Dropped, RequestHandler};
 use crate::tls;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full};
@@ -15,10 +15,42 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
+/// Maximum body size for interception (10 MB).
+const MAX_INTERCEPT_BODY: usize = 10 * 1024 * 1024;
+
+/// Check if a body should be intercepted based on Content-Length header.
+/// Returns true ONLY if Content-Length is explicitly present and within the limit.
+/// All other cases (chunked, close-delimited, unknown-length) skip interception
+/// to avoid consuming streaming bodies.
+fn should_intercept_body(headers: &hyper::HeaderMap) -> bool {
+    if let Some(cl) = headers.get(hyper::header::CONTENT_LENGTH) {
+        if let Ok(s) = cl.to_str() {
+            if let Ok(len) = s.parse::<usize>() {
+                return len <= MAX_INTERCEPT_BODY;
+            }
+        }
+    }
+    false
+}
+
+/// Collect a body into Bytes. Returns None on failure or size exceeded.
+async fn try_collect_body<B>(body: B) -> Option<Bytes>
+where
+    B: hyper::body::Body<Data = Bytes, Error = hyper::Error>,
+{
+    use http_body_util::Limited;
+    let limited = Limited::new(body, MAX_INTERCEPT_BODY);
+    BodyExt::collect(limited)
+        .await
+        .ok()
+        .map(|c| c.to_bytes())
+}
+
 /// Shared state passed to each connection handler.
 pub struct ProxyState {
     pub ca: Arc<CertificateAuthority>,
     pub mitm: bool,
+    pub intercept: bool,
     pub handler: Arc<dyn RequestHandler>,
 }
 
@@ -83,7 +115,7 @@ async fn handle_forward(
     let port = uri.port_u16().unwrap_or(80);
     let addr = format!("{host}:{port}");
 
-    // Build the request to forward (path-only URI, strip hop-by-hop headers)
+    // Build the request to forward
     let (mut parts, body) = req.into_parts();
     let path = parts
         .uri
@@ -97,12 +129,36 @@ async fn handle_forward(
             return Ok(bad_request("Invalid request URI"));
         }
     };
+
+    // Check intercept eligibility BEFORE stripping hop-by-hop headers
+    // so Transfer-Encoding: chunked is still visible for the decision.
+    let do_intercept = state.intercept && should_intercept_body(&parts.headers);
+
     strip_hop_by_hop_headers(&mut parts.headers);
 
-    let mut forwarded_req = Request::from_parts(parts, boxed_body(body));
+    let mut forwarded_req = if do_intercept {
+        match try_collect_body(body).await {
+            Some(bytes) => {
+                let mut req = Request::from_parts(parts, full_boxed_body(bytes));
+                req.extensions_mut().insert(Buffered);
+                req
+            }
+            None => {
+                // Collection failed (read error on a supposedly small body).
+                // Body is consumed; log and return error.
+                error!("Request body collection failed despite acceptable Content-Length");
+                return Ok(bad_gateway("Request body read error"));
+            }
+        }
+    } else {
+        Request::from_parts(parts, boxed_body(body))
+    };
 
-    // Let the handler inspect/modify the request
     state.handler.handle_request(&mut forwarded_req);
+
+    if forwarded_req.extensions().get::<Dropped>().is_some() {
+        return Ok(bad_gateway("Request dropped by interceptor"));
+    }
 
     // Connect to upstream
     let upstream = match TcpStream::connect(&addr).await {
@@ -131,8 +187,25 @@ async fn handle_forward(
     match sender.send_request(forwarded_req).await {
         Ok(res) => {
             let (parts, body) = res.into_parts();
-            let mut response = Response::from_parts(parts, boxed_body(body));
+            let mut response = if state.intercept && should_intercept_body(&parts.headers) {
+                match try_collect_body(body).await {
+                    Some(bytes) => {
+                        let mut res = Response::from_parts(parts, full_boxed_body(bytes));
+                        res.extensions_mut().insert(Buffered);
+                        res
+                    }
+                    None => {
+                        error!("Response body collection failed");
+                        return Ok(bad_gateway("Response body collection failed"));
+                    }
+                }
+            } else {
+                Response::from_parts(parts, boxed_body(body))
+            };
             state.handler.handle_response(&mut response);
+            if response.extensions().get::<Dropped>().is_some() {
+                return Ok(interceptor_dropped_response());
+            }
             Ok(response)
         }
         Err(e) => {
@@ -294,12 +367,31 @@ async fn mitm_forward_request(
     state: Arc<ProxyState>,
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let (mut parts, body) = req.into_parts();
+
+    let do_intercept = state.intercept && should_intercept_body(&parts.headers);
     strip_hop_by_hop_headers(&mut parts.headers);
 
-    let mut forwarded_req = Request::from_parts(parts, boxed_body(body));
+    let mut forwarded_req = if do_intercept {
+        match try_collect_body(body).await {
+            Some(bytes) => {
+                let mut req = Request::from_parts(parts, full_boxed_body(bytes));
+                req.extensions_mut().insert(Buffered);
+                req
+            }
+            None => {
+                error!("MITM request body collection failed");
+                return Ok(bad_gateway("Request body read error"));
+            }
+        }
+    } else {
+        Request::from_parts(parts, boxed_body(body))
+    };
 
-    // Let the handler inspect/modify
     state.handler.handle_request(&mut forwarded_req);
+
+    if forwarded_req.extensions().get::<Dropped>().is_some() {
+        return Ok(bad_gateway("Request dropped by interceptor"));
+    }
 
     // Connect to upstream over TLS
     let upstream_tls = match tls::connect_tls_upstream(host, addr).await {
@@ -330,8 +422,25 @@ async fn mitm_forward_request(
     match sender.send_request(forwarded_req).await {
         Ok(res) => {
             let (parts, body) = res.into_parts();
-            let mut response = Response::from_parts(parts, boxed_body(body));
+            let mut response = if state.intercept && should_intercept_body(&parts.headers) {
+                match try_collect_body(body).await {
+                    Some(bytes) => {
+                        let mut res = Response::from_parts(parts, full_boxed_body(bytes));
+                        res.extensions_mut().insert(Buffered);
+                        res
+                    }
+                    None => {
+                        error!("MITM response body collection failed");
+                        return Ok(bad_gateway("Response body collection failed"));
+                    }
+                }
+            } else {
+                Response::from_parts(parts, boxed_body(body))
+            };
             state.handler.handle_response(&mut response);
+            if response.extensions().get::<Dropped>().is_some() {
+                return Ok(interceptor_dropped_response());
+            }
             Ok(response)
         }
         Err(e) => {
@@ -412,6 +521,21 @@ fn bad_gateway(msg: &str) -> Response<BoxBody> {
     Response::builder()
         .status(502)
         .body(full_body(msg))
+        .unwrap()
+}
+
+/// Non-retryable response for interceptor-dropped responses.
+/// Uses 444 (No Response, nginx convention) + Connection: close to signal
+/// that the response was locally suppressed and the client should NOT retry.
+/// The upstream request was already executed.
+fn interceptor_dropped_response() -> Response<BoxBody> {
+    Response::builder()
+        .status(444)
+        .header("Connection", "close")
+        .header("X-RustGate-Interceptor", "response-dropped")
+        .body(full_body(
+            "Response dropped by interceptor. The upstream request was already executed. Do not retry.",
+        ))
         .unwrap()
 }
 

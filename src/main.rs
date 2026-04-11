@@ -29,6 +29,10 @@ struct Cli {
     /// Enable MITM mode (TLS interception)
     #[arg(long)]
     mitm: bool,
+
+    /// Enable request/response interception TUI (use with --mitm)
+    #[arg(long)]
+    intercept: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -89,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("{BANNER}");
 
     match cli.command {
-        None => run_proxy(cli.host, cli.port, cli.mitm).await,
+        None => run_proxy(cli.host, cli.port, cli.mitm, cli.intercept).await,
         Some(Commands::Server {
             host,
             port,
@@ -114,6 +118,7 @@ async fn run_proxy(
     host: String,
     port: u16,
     mitm: bool,
+    intercept: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = format!("{host}:{port}");
 
@@ -127,10 +132,27 @@ async fn run_proxy(
         );
     }
 
+    let handler: Arc<dyn rustgate::handler::RequestHandler> = if intercept {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let active_clone = active.clone();
+
+        std::thread::spawn(move || {
+            if let Err(e) = rustgate::tui::run_tui(rx, active_clone) {
+                eprintln!("TUI error: {e}");
+            }
+        });
+
+        Arc::new(rustgate::intercept::InterceptHandler::new(tx, active))
+    } else {
+        Arc::new(LoggingHandler)
+    };
+
     let state = Arc::new(ProxyState {
         ca,
         mitm,
-        handler: Arc::new(LoggingHandler),
+        intercept,
+        handler,
     });
 
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
