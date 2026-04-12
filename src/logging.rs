@@ -125,16 +125,16 @@ fn is_leap(y: u64) -> bool {
 
 /// Encode body bytes for logging.
 /// Returns (body_text, body_base64, body_truncated).
-/// `has_content_length` indicates whether the original message had a Content-Length header.
-/// Bodyless requests (no CL, not buffered) are NOT marked truncated.
+/// `may_have_body` is true if the message had Content-Length or Transfer-Encoding,
+/// indicating a body was expected but may not have been captured.
 fn encode_body(
     bytes: &Bytes,
     is_buffered: bool,
-    has_content_length: bool,
+    may_have_body: bool,
 ) -> (Option<String>, Option<String>, bool) {
     if !is_buffered || bytes.is_empty() {
-        // truncated only if there was a Content-Length but we couldn't buffer
-        let truncated = !is_buffered && has_content_length;
+        // truncated if body was expected but we couldn't buffer it
+        let truncated = !is_buffered && may_have_body;
         return (None, None, truncated);
     }
     match std::str::from_utf8(bytes) {
@@ -246,8 +246,9 @@ impl RequestHandler for TrafficLogHandler {
             Bytes::new()
         };
 
-        let has_cl = req.headers().contains_key(hyper::header::CONTENT_LENGTH);
-        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered, has_cl);
+        let may_have_body = req.headers().contains_key(hyper::header::CONTENT_LENGTH)
+            || req.headers().contains_key(hyper::header::TRANSFER_ENCODING);
+        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered, may_have_body);
 
         let upstream = req.extensions().get::<UpstreamTarget>().cloned();
         let logged_req = LoggedRequest {
@@ -319,8 +320,9 @@ impl RequestHandler for TrafficLogHandler {
             Bytes::new()
         };
 
-        let has_cl = res.headers().contains_key(hyper::header::CONTENT_LENGTH);
-        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered, has_cl);
+        let may_have_body = res.headers().contains_key(hyper::header::CONTENT_LENGTH)
+            || res.headers().contains_key(hyper::header::TRANSFER_ENCODING);
+        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered, may_have_body);
 
         let logged_res = LoggedResponse {
             status: if is_dropped { 0 } else { res.status().as_u16() },

@@ -56,6 +56,22 @@ pub struct ProxyState {
     pub handler: Arc<dyn RequestHandler>,
 }
 
+/// Flush a pending log entry by calling handle_response with a synthetic error response.
+fn flush_log_on_error(
+    handler: &Arc<dyn RequestHandler>,
+    log_id: Option<LogId>,
+    status: u16,
+) {
+    if let Some(id) = log_id {
+        let mut res = Response::builder()
+            .status(status)
+            .body(full_boxed_body(Bytes::new()))
+            .unwrap();
+        res.extensions_mut().insert(id);
+        handler.handle_response(&mut res);
+    }
+}
+
 /// Handle a single accepted TCP connection.
 pub async fn handle_connection(
     stream: TcpStream,
@@ -172,6 +188,7 @@ async fn handle_forward(
         Ok(s) => s,
         Err(e) => {
             error!("Failed to connect to {addr}: {e}");
+            flush_log_on_error(&state.handler, log_id, 502);
             return Ok(bad_gateway(&format!("Failed to connect to {addr}")));
         }
     };
@@ -181,6 +198,7 @@ async fn handle_forward(
         Ok(r) => r,
         Err(e) => {
             error!("Handshake with {addr} failed: {e}");
+            flush_log_on_error(&state.handler, log_id, 502);
             return Ok(bad_gateway("Upstream handshake failed"));
         }
     };
@@ -218,6 +236,7 @@ async fn handle_forward(
         }
         Err(e) => {
             error!("Upstream request failed: {e}");
+            flush_log_on_error(&state.handler, log_id, 502);
             Ok(bad_gateway("Upstream request failed"))
         }
     }
@@ -413,6 +432,7 @@ async fn mitm_forward_request(
         Ok(s) => s,
         Err(e) => {
             error!("Failed TLS connect to {addr}: {e}");
+            flush_log_on_error(&state.handler, log_id.clone(), 502);
             return Ok(bad_gateway(&format!(
                 "Failed to connect to upstream: {e}"
             )));
@@ -424,6 +444,7 @@ async fn mitm_forward_request(
         Ok(r) => r,
         Err(e) => {
             error!("Upstream TLS handshake failed: {e}");
+            flush_log_on_error(&state.handler, log_id.clone(), 502);
             return Ok(bad_gateway("Upstream TLS handshake failed"));
         }
     };
@@ -461,6 +482,7 @@ async fn mitm_forward_request(
         }
         Err(e) => {
             error!("Upstream TLS request failed: {e}");
+            flush_log_on_error(&state.handler, log_id, 502);
             Ok(bad_gateway("Upstream request failed"))
         }
     }
