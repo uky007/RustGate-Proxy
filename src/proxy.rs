@@ -151,14 +151,9 @@ async fn handle_forward(
                 req.extensions_mut().insert(Buffered);
                 req
             }
-            None if state.intercept => {
+            None => {
                 error!("Request body collection failed");
                 return Ok(bad_gateway("Request body read error"));
-            }
-            None => {
-                // Logging-only: body consumed but forward with empty body (best-effort)
-                warn!("Request body collection failed, forwarding with empty body");
-                Request::from_parts(parts, full_boxed_body(Bytes::new()))
             }
         }
     } else {
@@ -206,14 +201,9 @@ async fn handle_forward(
                         res.extensions_mut().insert(Buffered);
                         res
                     }
-                    None if state.intercept => {
-                        error!("Response body collection failed");
-                        return Ok(bad_gateway("Response body collection failed"));
-                    }
                     None => {
-                        // Logging-only: pass through empty body (best-effort)
-                        warn!("Response body collection failed, forwarding empty");
-                        Response::from_parts(parts, full_boxed_body(Bytes::new()))
+                        error!("Response body collection failed");
+                        return Ok(bad_gateway("Response body read error"));
                     }
                 }
             } else {

@@ -138,14 +138,22 @@ fn encode_body(bytes: &Bytes, is_buffered: bool) -> (Option<String>, Option<Stri
     }
 }
 
+/// Headers redacted by default in traffic logs to prevent credential persistence.
+const REDACTED_HEADERS: &[&str] = &[
+    "authorization", "proxy-authorization", "cookie", "set-cookie",
+    "x-api-key", "x-auth-token", "x-csrf-token", "x-xsrf-token",
+];
+
 fn capture_headers(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         .map(|(name, value)| {
-            (
-                name.to_string(),
-                value.to_str().unwrap_or("<binary>").to_string(),
-            )
+            let val = if REDACTED_HEADERS.iter().any(|h| name.as_str().eq_ignore_ascii_case(h)) {
+                "<redacted>".to_string()
+            } else {
+                value.to_str().unwrap_or("<binary>").to_string()
+            };
+            (name.to_string(), val)
         })
         .collect()
 }
