@@ -392,13 +392,9 @@ async fn mitm_forward_request(
                 req.extensions_mut().insert(Buffered);
                 req
             }
-            None if state.intercept => {
+            None => {
                 error!("MITM request body collection failed");
                 return Ok(bad_gateway("Request body read error"));
-            }
-            None => {
-                warn!("MITM request body collection failed, forwarding with empty body");
-                Request::from_parts(parts, full_boxed_body(Bytes::new()))
             }
         }
     } else {
@@ -448,13 +444,9 @@ async fn mitm_forward_request(
                         res.extensions_mut().insert(Buffered);
                         res
                     }
-                    None if state.intercept => {
-                        error!("MITM response body collection failed");
-                        return Ok(bad_gateway("Response body collection failed"));
-                    }
                     None => {
-                        warn!("MITM response body collection failed, forwarding empty");
-                        Response::from_parts(parts, full_boxed_body(Bytes::new()))
+                        error!("MITM response body collection failed");
+                        return Ok(bad_gateway("Response body read error"));
                     }
                 }
             } else {

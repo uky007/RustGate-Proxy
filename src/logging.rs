@@ -125,9 +125,17 @@ fn is_leap(y: u64) -> bool {
 
 /// Encode body bytes for logging.
 /// Returns (body_text, body_base64, body_truncated).
-fn encode_body(bytes: &Bytes, is_buffered: bool) -> (Option<String>, Option<String>, bool) {
+/// `has_content_length` indicates whether the original message had a Content-Length header.
+/// Bodyless requests (no CL, not buffered) are NOT marked truncated.
+fn encode_body(
+    bytes: &Bytes,
+    is_buffered: bool,
+    has_content_length: bool,
+) -> (Option<String>, Option<String>, bool) {
     if !is_buffered || bytes.is_empty() {
-        return (None, None, !is_buffered);
+        // truncated only if there was a Content-Length but we couldn't buffer
+        let truncated = !is_buffered && has_content_length;
+        return (None, None, truncated);
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => (Some(text.to_string()), None, false),
@@ -138,20 +146,29 @@ fn encode_body(bytes: &Bytes, is_buffered: bool) -> (Option<String>, Option<Stri
     }
 }
 
-/// Headers redacted by default in traffic logs to prevent credential persistence.
-const REDACTED_HEADERS: &[&str] = &[
-    "authorization", "proxy-authorization", "cookie", "set-cookie",
-    "x-api-key", "x-auth-token", "x-csrf-token", "x-xsrf-token",
+/// Safe headers that are logged verbatim. All others are redacted to prevent
+/// credential persistence (Authorization, Cookie, vendor API keys, etc.).
+const SAFE_LOG_HEADERS: &[&str] = &[
+    "accept", "accept-encoding", "accept-language", "cache-control",
+    "connection", "content-encoding", "content-language", "content-length",
+    "content-type", "date", "etag", "expires", "host", "if-match",
+    "if-modified-since", "if-none-match", "if-unmodified-since",
+    "last-modified", "location", "pragma", "range", "server",
+    "transfer-encoding", "user-agent", "vary", "via",
+    "access-control-allow-origin", "access-control-allow-methods",
+    "access-control-allow-headers", "access-control-max-age",
+    "x-content-type-options", "x-frame-options", "x-request-id",
+    "strict-transport-security", "content-security-policy",
 ];
 
 fn capture_headers(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         .map(|(name, value)| {
-            let val = if REDACTED_HEADERS.iter().any(|h| name.as_str().eq_ignore_ascii_case(h)) {
-                "<redacted>".to_string()
-            } else {
+            let val = if SAFE_LOG_HEADERS.iter().any(|h| name.as_str().eq_ignore_ascii_case(h)) {
                 value.to_str().unwrap_or("<binary>").to_string()
+            } else {
+                "<redacted>".to_string()
             };
             (name.to_string(), val)
         })
@@ -229,7 +246,8 @@ impl RequestHandler for TrafficLogHandler {
             Bytes::new()
         };
 
-        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered);
+        let has_cl = req.headers().contains_key(hyper::header::CONTENT_LENGTH);
+        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered, has_cl);
 
         let upstream = req.extensions().get::<UpstreamTarget>().cloned();
         let logged_req = LoggedRequest {
@@ -301,7 +319,8 @@ impl RequestHandler for TrafficLogHandler {
             Bytes::new()
         };
 
-        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered);
+        let has_cl = res.headers().contains_key(hyper::header::CONTENT_LENGTH);
+        let (body, body_base64, body_truncated) = encode_body(&body_bytes, is_buffered, has_cl);
 
         let logged_res = LoggedResponse {
             status: if is_dropped { 0 } else { res.status().as_u16() },
@@ -372,7 +391,7 @@ mod tests {
     #[test]
     fn test_encode_body_utf8() {
         let bytes = Bytes::from("hello world");
-        let (body, b64, trunc) = encode_body(&bytes, true);
+        let (body, b64, trunc) = encode_body(&bytes, true, true);
         assert_eq!(body.unwrap(), "hello world");
         assert!(b64.is_none());
         assert!(!trunc);
@@ -381,19 +400,30 @@ mod tests {
     #[test]
     fn test_encode_body_binary() {
         let bytes = Bytes::from(vec![0xFF, 0xFE, 0x00, 0x01]);
-        let (body, b64, trunc) = encode_body(&bytes, true);
+        let (body, b64, trunc) = encode_body(&bytes, true, true);
         assert!(body.is_none());
         assert!(b64.is_some());
         assert!(!trunc);
     }
 
     #[test]
-    fn test_encode_body_not_buffered() {
+    fn test_encode_body_not_buffered_with_cl() {
+        // Has Content-Length but wasn't buffered → truncated
         let bytes = Bytes::new();
-        let (body, b64, trunc) = encode_body(&bytes, false);
+        let (body, b64, trunc) = encode_body(&bytes, false, true);
         assert!(body.is_none());
         assert!(b64.is_none());
         assert!(trunc);
+    }
+
+    #[test]
+    fn test_encode_body_not_buffered_no_cl() {
+        // No Content-Length, not buffered → NOT truncated (bodyless request)
+        let bytes = Bytes::new();
+        let (body, b64, trunc) = encode_body(&bytes, false, false);
+        assert!(body.is_none());
+        assert!(b64.is_none());
+        assert!(!trunc);
     }
 
     #[test]
