@@ -58,6 +58,7 @@ async fn spawn_proxy(mitm: bool) -> (String, tokio::task::JoinHandle<()>, TempDi
         ca,
         mitm,
         intercept: false,
+        log_traffic: false,
         handler: Arc::new(LoggingHandler),
     });
 

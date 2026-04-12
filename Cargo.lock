@@ -1051,6 +1051,7 @@ dependencies = [
 name = "rustgate-proxy"
 version = "0.3.0"
 dependencies = [
+ "base64",
  "bytes",
  "clap",
  "crossterm",

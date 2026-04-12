@@ -33,6 +33,10 @@ struct Cli {
     /// Enable request/response interception TUI (use with --mitm)
     #[arg(long)]
     intercept: bool,
+
+    /// Log traffic to JSON Lines file
+    #[arg(long)]
+    log_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -77,6 +81,18 @@ enum Commands {
         #[arg(long)]
         ca_dir: PathBuf,
     },
+    /// Replay requests from a traffic log file
+    Replay {
+        /// Path to JSON Lines log file
+        #[arg(long)]
+        log_file: PathBuf,
+        /// Override target URL (scheme://host:port) for all requests
+        #[arg(long)]
+        target: Option<String>,
+        /// Delay between requests in milliseconds
+        #[arg(long, default_value_t = 0)]
+        delay: u64,
+    },
 }
 
 #[tokio::main]
@@ -93,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("{BANNER}");
 
     match cli.command {
-        None => run_proxy(cli.host, cli.port, cli.mitm, cli.intercept).await,
+        None => run_proxy(cli.host, cli.port, cli.mitm, cli.intercept, cli.log_file).await,
         Some(Commands::Server {
             host,
             port,
@@ -111,6 +127,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             out_dir,
             ca_dir,
         }) => run_gen_client_cert(cn, out_dir, ca_dir).await,
+        Some(Commands::Replay {
+            log_file,
+            target,
+            delay,
+        }) => run_replay(log_file, target, delay).await,
     }
 }
 
@@ -119,6 +140,7 @@ async fn run_proxy(
     port: u16,
     mitm: bool,
     intercept: bool,
+    log_file: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = format!("{host}:{port}");
 
@@ -132,7 +154,7 @@ async fn run_proxy(
         );
     }
 
-    let handler: Arc<dyn rustgate::handler::RequestHandler> = if intercept {
+    let base_handler: Arc<dyn rustgate::handler::RequestHandler> = if intercept {
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let active_clone = active.clone();
@@ -148,10 +170,18 @@ async fn run_proxy(
         Arc::new(LoggingHandler)
     };
 
+    let log_traffic = log_file.is_some();
+    let handler: Arc<dyn rustgate::handler::RequestHandler> = if let Some(ref path) = log_file {
+        Arc::new(rustgate::logging::TrafficLogHandler::new(base_handler, path)?)
+    } else {
+        base_handler
+    };
+
     let state = Arc::new(ProxyState {
         ca,
         mitm,
         intercept,
+        log_traffic,
         handler,
     });
 
@@ -267,5 +297,156 @@ async fn run_gen_client_cert(
     info!("  Key:  {}", key_path.display());
     info!("  CN:   {cn}");
 
+    Ok(())
+}
+
+async fn run_replay(
+    log_file: PathBuf,
+    target: Option<String>,
+    delay: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use base64::Engine;
+    use bytes::Bytes;
+    use hyper::client::conn::http1 as client_http1;
+    use hyper_util::rt::TokioIo;
+    use std::io::BufRead;
+    use tokio::net::TcpStream;
+
+    let file = std::fs::File::open(&log_file)?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut count = 0u64;
+    for line_result in reader.lines() {
+        let line = line_result?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: rustgate::logging::LogEntry = serde_json::from_str(&line)?;
+
+        // Determine target
+        let (scheme, host, port) = if let Some(ref t) = target {
+            let parsed: http::Uri = t.parse()?;
+            let s = parsed.scheme_str().unwrap_or("http").to_string();
+            let h = parsed.host().unwrap_or("localhost").to_string();
+            let p = parsed.port_u16().unwrap_or(if s == "https" { 443 } else { 80 });
+            (s, h, p)
+        } else if !entry.request.target_host.is_empty() {
+            (
+                entry.request.target_scheme.clone(),
+                entry.request.target_host.clone(),
+                entry.request.target_port,
+            )
+        } else {
+            warn!("Skipping entry {}: no target info", entry.id);
+            continue;
+        };
+
+        let addr = format!("{host}:{port}");
+
+        // Skip entries with truncated bodies (would send wrong payload)
+        if entry.request.body_truncated {
+            warn!("Skipping entry {}: body was not captured", entry.id);
+            continue;
+        }
+
+        // Reconstruct body
+        let body_bytes = if let Some(ref text) = entry.request.body {
+            Bytes::from(text.clone())
+        } else if let Some(ref b64) = entry.request.body_base64 {
+            Bytes::from(base64::engine::general_purpose::STANDARD.decode(b64)?)
+        } else {
+            Bytes::new()
+        };
+
+        // Build request with path-only URI
+        let path = {
+            let parsed: http::Uri = entry.request.uri.parse().unwrap_or_default();
+            parsed
+                .path_and_query()
+                .map(|pq| pq.to_string())
+                .unwrap_or_else(|| "/".into())
+        };
+        let mut builder = hyper::Request::builder()
+            .method(entry.request.method.as_str())
+            .uri(&path);
+        // Sensitive headers to strip when retargeting to a different host
+        const SENSITIVE_HEADERS: &[&str] = &[
+            "authorization", "cookie", "proxy-authorization",
+            "x-csrf-token", "x-xsrf-token", "origin", "referer",
+        ];
+        for (name, value) in &entry.request.headers {
+            if name.eq_ignore_ascii_case("host") && target.is_some() {
+                builder = builder.header("host", &host);
+            } else if target.is_some()
+                && SENSITIVE_HEADERS.iter().any(|h| name.eq_ignore_ascii_case(h))
+            {
+                // Strip sensitive headers when retargeting
+                continue;
+            } else if name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("transfer-encoding")
+            {
+                // Skip — recompute from actual body below
+                continue;
+            } else {
+                builder = builder.header(name.as_str(), value.as_str());
+            }
+        }
+        // Set correct Content-Length for the reconstructed body
+        if !body_bytes.is_empty() {
+            builder = builder.header("content-length", body_bytes.len().to_string());
+        }
+        let req = builder.body(rustgate::handler::full_boxed_body(body_bytes))?;
+
+        // Connect and send (HTTP or HTTPS)
+        let send_result = if scheme == "https" {
+            // TLS connection
+            match rustgate::tls::connect_tls_upstream(&host, &addr).await {
+                Ok(tls_stream) => {
+                    let io = TokioIo::new(tls_stream);
+                    match client_http1::handshake(io).await {
+                        Ok((mut sender, conn)) => {
+                            tokio::spawn(async move { let _ = conn.await; });
+                            sender.send_request(req).await.map_err(|e| e.to_string())
+                        }
+                        Err(e) => Err(format!("TLS handshake: {e}")),
+                    }
+                }
+                Err(e) => Err(format!("TLS connect: {e}")),
+            }
+        } else {
+            match TcpStream::connect(&addr).await {
+                Ok(tcp) => {
+                    let io = TokioIo::new(tcp);
+                    match client_http1::handshake(io).await {
+                        Ok((mut sender, conn)) => {
+                            tokio::spawn(async move { let _ = conn.await; });
+                            sender.send_request(req).await.map_err(|e| e.to_string())
+                        }
+                        Err(e) => Err(format!("Handshake: {e}")),
+                    }
+                }
+                Err(e) => Err(format!("Connect: {e}")),
+            }
+        };
+
+        match send_result {
+            Ok(res) => {
+                count += 1;
+                info!(
+                    "[{count}] {} {}://{}{} -> {}",
+                    entry.request.method, scheme, host, entry.request.uri, res.status()
+                );
+            }
+            Err(e) => {
+                warn!("[{}] Failed: {e}", entry.request.uri);
+            }
+        }
+
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+    }
+
+    info!("Replay complete: {count} requests sent");
     Ok(())
 }

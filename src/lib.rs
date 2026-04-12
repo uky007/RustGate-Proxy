@@ -3,6 +3,7 @@ pub mod cert;
 pub mod error;
 pub mod handler;
 pub mod intercept;
+pub mod logging;
 pub mod protocol;
 pub mod proxy;
 pub mod socks5;

@@ -1,6 +1,7 @@
 use crate::cert::CertificateAuthority;
 use crate::error::ProxyError;
 use crate::handler::{boxed_body, full_boxed_body, Buffered, BoxBody, Dropped, RequestHandler};
+use crate::logging::{LogId, UpstreamTarget};
 use crate::tls;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full};
@@ -51,6 +52,7 @@ pub struct ProxyState {
     pub ca: Arc<CertificateAuthority>,
     pub mitm: bool,
     pub intercept: bool,
+    pub log_traffic: bool,
     pub handler: Arc<dyn RequestHandler>,
 }
 
@@ -130,13 +132,19 @@ async fn handle_forward(
         }
     };
 
+    // Store upstream target for logging
+    parts.extensions.insert(UpstreamTarget {
+        scheme: "http".into(),
+        host: host.to_string(),
+        port,
+    });
+
     // Check intercept eligibility BEFORE stripping hop-by-hop headers
-    // so Transfer-Encoding: chunked is still visible for the decision.
-    let do_intercept = state.intercept && should_intercept_body(&parts.headers);
+    let do_buffer = (state.intercept || state.log_traffic) && should_intercept_body(&parts.headers);
 
     strip_hop_by_hop_headers(&mut parts.headers);
 
-    let mut forwarded_req = if do_intercept {
+    let mut forwarded_req = if do_buffer {
         match try_collect_body(body).await {
             Some(bytes) => {
                 let mut req = Request::from_parts(parts, full_boxed_body(bytes));
@@ -155,6 +163,7 @@ async fn handle_forward(
     };
 
     state.handler.handle_request(&mut forwarded_req);
+    let log_id = forwarded_req.extensions().get::<LogId>().cloned();
 
     if forwarded_req.extensions().get::<Dropped>().is_some() {
         return Ok(bad_gateway("Request dropped by interceptor"));
@@ -187,7 +196,7 @@ async fn handle_forward(
     match sender.send_request(forwarded_req).await {
         Ok(res) => {
             let (parts, body) = res.into_parts();
-            let mut response = if state.intercept && should_intercept_body(&parts.headers) {
+            let mut response = if (state.intercept || state.log_traffic) && should_intercept_body(&parts.headers) {
                 match try_collect_body(body).await {
                     Some(bytes) => {
                         let mut res = Response::from_parts(parts, full_boxed_body(bytes));
@@ -202,6 +211,7 @@ async fn handle_forward(
             } else {
                 Response::from_parts(parts, boxed_body(body))
             };
+            if let Some(id) = log_id { response.extensions_mut().insert(id); }
             state.handler.handle_response(&mut response);
             if response.extensions().get::<Dropped>().is_some() {
                 return Ok(interceptor_dropped_response());
@@ -368,10 +378,16 @@ async fn mitm_forward_request(
 ) -> Result<Response<BoxBody>, hyper::Error> {
     let (mut parts, body) = req.into_parts();
 
-    let do_intercept = state.intercept && should_intercept_body(&parts.headers);
+    parts.extensions.insert(UpstreamTarget {
+        scheme: "https".into(),
+        host: host.to_string(),
+        port: addr.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).unwrap_or(443),
+    });
+
+    let do_buffer = (state.intercept || state.log_traffic) && should_intercept_body(&parts.headers);
     strip_hop_by_hop_headers(&mut parts.headers);
 
-    let mut forwarded_req = if do_intercept {
+    let mut forwarded_req = if do_buffer {
         match try_collect_body(body).await {
             Some(bytes) => {
                 let mut req = Request::from_parts(parts, full_boxed_body(bytes));
@@ -388,6 +404,7 @@ async fn mitm_forward_request(
     };
 
     state.handler.handle_request(&mut forwarded_req);
+    let log_id = forwarded_req.extensions().get::<LogId>().cloned();
 
     if forwarded_req.extensions().get::<Dropped>().is_some() {
         return Ok(bad_gateway("Request dropped by interceptor"));
@@ -422,7 +439,7 @@ async fn mitm_forward_request(
     match sender.send_request(forwarded_req).await {
         Ok(res) => {
             let (parts, body) = res.into_parts();
-            let mut response = if state.intercept && should_intercept_body(&parts.headers) {
+            let mut response = if (state.intercept || state.log_traffic) && should_intercept_body(&parts.headers) {
                 match try_collect_body(body).await {
                     Some(bytes) => {
                         let mut res = Response::from_parts(parts, full_boxed_body(bytes));
@@ -437,6 +454,7 @@ async fn mitm_forward_request(
             } else {
                 Response::from_parts(parts, boxed_body(body))
             };
+            if let Some(id) = log_id { response.extensions_mut().insert(id); }
             state.handler.handle_response(&mut response);
             if response.extensions().get::<Dropped>().is_some() {
                 return Ok(interceptor_dropped_response());
