@@ -369,24 +369,24 @@ async fn run_replay(
         let mut builder = hyper::Request::builder()
             .method(entry.request.method.as_str())
             .uri(&path);
-        // Sensitive headers to strip when retargeting to a different host
-        const SENSITIVE_HEADERS: &[&str] = &[
-            "authorization", "cookie", "proxy-authorization",
-            "x-csrf-token", "x-xsrf-token", "origin", "referer",
+        // Safe headers to forward when retargeting to a different host.
+        // All other headers (including auth, cookies, vendor tokens) are dropped.
+        const SAFE_HEADERS: &[&str] = &[
+            "accept", "accept-encoding", "accept-language", "cache-control",
+            "content-type", "user-agent", "if-match", "if-none-match",
+            "if-modified-since", "if-unmodified-since", "range",
         ];
         for (name, value) in &entry.request.headers {
-            if name.eq_ignore_ascii_case("host") && target.is_some() {
+            if name.eq_ignore_ascii_case("host") {
                 builder = builder.header("host", &host);
-            } else if target.is_some()
-                && SENSITIVE_HEADERS.iter().any(|h| name.eq_ignore_ascii_case(h))
-            {
-                // Strip sensitive headers when retargeting
-                continue;
             } else if name.eq_ignore_ascii_case("content-length")
                 || name.eq_ignore_ascii_case("transfer-encoding")
             {
-                // Skip — recompute from actual body below
-                continue;
+                continue; // recomputed below
+            } else if target.is_some()
+                && !SAFE_HEADERS.iter().any(|h| name.eq_ignore_ascii_case(h))
+            {
+                continue; // drop non-safe headers when retargeting
             } else {
                 builder = builder.header(name.as_str(), value.as_str());
             }

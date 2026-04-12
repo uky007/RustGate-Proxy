@@ -253,7 +253,9 @@ impl RequestHandler for TrafficLogHandler {
                     body_truncated: true,
                 },
             };
-            let _ = self.tx.try_send(entry);
+            if self.tx.try_send(entry).is_err() {
+                tracing::warn!("Traffic log queue full, entry dropped");
+            }
             return;
         }
 
@@ -264,6 +266,7 @@ impl RequestHandler for TrafficLogHandler {
             if pending.len() > 1000 {
                 let oldest = *pending.keys().min().unwrap();
                 pending.remove(&oldest);
+                tracing::warn!("Evicted unpaired log entry {oldest} (pending overflow)");
             }
             pending.insert(id, PendingLogEntry {
                 timestamp_req: format_timestamp(),
@@ -312,7 +315,9 @@ impl RequestHandler for TrafficLogHandler {
                     request: pending.request,
                     response: logged_res,
                 };
-                let _ = self.tx.try_send(entry);
+                if self.tx.try_send(entry).is_err() {
+                tracing::warn!("Traffic log queue full, entry dropped");
+            }
             }
         }
     }
