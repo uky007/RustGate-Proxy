@@ -176,6 +176,28 @@ fn capture_headers(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Redact query parameter values in a URI to prevent credential persistence.
+/// `/path?key=secret&token=xxx` → `/path?key=<redacted>&token=<redacted>`
+fn redact_query_values(uri: &hyper::Uri) -> String {
+    let path = uri.path();
+    match uri.query() {
+        None => path.to_string(),
+        Some(query) => {
+            let redacted: Vec<String> = query
+                .split('&')
+                .map(|pair| {
+                    if let Some((key, _)) = pair.split_once('=') {
+                        format!("{key}=<redacted>")
+                    } else {
+                        pair.to_string()
+                    }
+                })
+                .collect();
+            format!("{path}?{}", redacted.join("&"))
+        }
+    }
+}
+
 /// Background writer thread that receives LogEntry values and writes JSON Lines.
 struct LogWriter {
     rx: mpsc::Receiver<LogEntry>,
@@ -289,7 +311,7 @@ impl RequestHandler for TrafficLogHandler {
         let upstream = req.extensions().get::<UpstreamTarget>().cloned();
         let logged_req = LoggedRequest {
             method: req.method().to_string(),
-            uri: req.uri().to_string(),
+            uri: redact_query_values(req.uri()),
             version: format!("{:?}", req.version()),
             target_scheme: upstream.as_ref().map(|t| t.scheme.clone()).unwrap_or_default(),
             target_host: upstream.as_ref().map(|t| t.host.clone()).unwrap_or_default(),
@@ -329,12 +351,12 @@ impl RequestHandler for TrafficLogHandler {
             let now = std::time::Instant::now();
             let expired: Vec<u64> = pending
                 .iter()
-                .filter(|(_, v)| now.duration_since(v.created_at).as_secs() > 60)
+                .filter(|(_, v)| now.duration_since(v.created_at).as_secs() > 300)
                 .map(|(k, _)| *k)
                 .collect();
             for eid in &expired {
                 if let Some(stale) = pending.remove(eid) {
-                    tracing::warn!("Expired unpaired log entry {eid} (>60s)");
+                    tracing::warn!("Expired unpaired log entry {eid} (>300s)");
                     // Emit synthetic timeout entry
                     let entry = LogEntry {
                         id: *eid,
