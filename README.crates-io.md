@@ -70,7 +70,7 @@ rustgate gen-client-cert --cn my-client --out-dir ./certs --ca-dir ./my-ca
 
 ```toml
 [dependencies]
-rustgate-proxy = "0.3"
+rustgate-proxy = "0.4"
 ```
 
 ## Notes

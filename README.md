@@ -19,6 +19,8 @@ MITM-capable HTTP/HTTPS proxy with WebSocket-based C2 tunneling, written in Rust
 - **CA Certificate Management** - Auto-generates and stores root CA in `~/.rustgate/`
 - **Request/Response Rewriting** - Hook mechanism via the `RequestHandler` trait
 - **TUI Interceptor** (v0.3.0) - Interactive Burp-style request/response inspection, editing, and drop
+- **Traffic Logging** (v0.4.0) - JSON Lines traffic capture with automatic credential redaction
+- **Request Replay** (v0.4.0) - Resend captured traffic with HTTPS support and target override
 
 ### C2 Mode (v0.2.0)
 
@@ -122,6 +124,31 @@ rustgate client \
 rustgate gen-client-cert --cn my-client --out-dir ./certs --ca-dir ./my-ca
 ```
 
+### Traffic Logging (new in v0.4.0)
+
+```bash
+# Log all traffic to JSON Lines file
+rustgate --mitm --log-file /tmp/traffic.jsonl
+
+# Combined with intercept
+rustgate --mitm --intercept --log-file /tmp/traffic.jsonl
+```
+
+Logs request/response pairs with timestamps, headers, and bodies. Sensitive headers and query parameter values are automatically redacted. Log files are created with `0o600` permissions.
+
+### Replay
+
+```bash
+# Replay captured traffic to the original targets
+rustgate replay --log-file /tmp/traffic.jsonl
+
+# Replay to a different target (strips non-safe headers)
+rustgate replay --log-file /tmp/traffic.jsonl --target https://staging.example.com
+
+# Rate-limited replay
+rustgate replay --log-file /tmp/traffic.jsonl --delay 100
+```
+
 ### Log level
 
 ```bash
@@ -145,7 +172,7 @@ curl --cacert ~/.rustgate/ca.pem -x http://localhost:8080 https://httpbin.org/ge
 
 ```toml
 [dependencies]
-rustgate-proxy = "0.3"
+rustgate-proxy = "0.4"
 ```
 
 ### Custom handler
