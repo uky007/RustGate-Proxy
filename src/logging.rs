@@ -184,9 +184,18 @@ struct LogWriter {
 impl LogWriter {
     fn run(mut self) {
         while let Ok(entry) = self.rx.recv() {
-            if let Ok(json) = serde_json::to_string(&entry) {
-                let _ = writeln!(self.file, "{json}");
-                let _ = self.file.flush();
+            match serde_json::to_string(&entry) {
+                Ok(json) => {
+                    if let Err(e) = writeln!(self.file, "{json}") {
+                        eprintln!("[rustgate] Traffic log write error: {e}");
+                    }
+                    if let Err(e) = self.file.flush() {
+                        eprintln!("[rustgate] Traffic log flush error: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[rustgate] Traffic log serialize error: {e}");
+                }
             }
         }
     }
@@ -221,11 +230,15 @@ impl TrafficLogHandler {
         #[cfg(unix)]
         let file = {
             use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
+            use std::os::unix::fs::PermissionsExt;
+            let f = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .mode(0o600)
-                .open(path)?
+                .open(path)?;
+            // Force 0o600 even if the file already existed with broader permissions
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            f
         };
         #[cfg(not(unix))]
         let file = std::fs::OpenOptions::new()

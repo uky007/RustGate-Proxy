@@ -326,8 +326,12 @@ async fn run_replay(
         // Determine target
         let (scheme, host, port) = if let Some(ref t) = target {
             let parsed: http::Uri = t.parse()?;
-            let s = parsed.scheme_str().unwrap_or("http").to_string();
-            let h = parsed.host().unwrap_or("localhost").to_string();
+            let s = parsed.scheme_str().ok_or_else(|| {
+                format!("--target must include scheme (http:// or https://): {t}")
+            })?.to_string();
+            let h = parsed.host().ok_or_else(|| {
+                format!("--target must include host: {t}")
+            })?.to_string();
             let p = parsed.port_u16().unwrap_or(if s == "https" { 443 } else { 80 });
             (s, h, p)
         } else if !entry.request.target_host.is_empty() {
