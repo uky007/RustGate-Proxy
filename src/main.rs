@@ -329,6 +329,9 @@ async fn run_replay(
             let s = parsed.scheme_str().ok_or_else(|| {
                 format!("--target must include scheme (http:// or https://): {t}")
             })?.to_string();
+            if s != "http" && s != "https" {
+                return Err(format!("--target scheme must be http or https, got: {s}").into());
+            }
             let h = parsed.host().ok_or_else(|| {
                 format!("--target must include host: {t}")
             })?.to_string();
@@ -377,8 +380,8 @@ async fn run_replay(
         // All other headers (including auth, cookies, vendor tokens) are dropped.
         const SAFE_HEADERS: &[&str] = &[
             "accept", "accept-encoding", "accept-language", "cache-control",
-            "content-type", "user-agent", "if-match", "if-none-match",
-            "if-modified-since", "if-unmodified-since", "range",
+            "content-encoding", "content-type", "user-agent", "if-match",
+            "if-none-match", "if-modified-since", "if-unmodified-since", "range",
         ];
         for (name, value) in &entry.request.headers {
             if value == "<redacted>" {

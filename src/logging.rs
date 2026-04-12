@@ -66,6 +66,7 @@ pub struct LoggedResponse {
 }
 
 struct PendingLogEntry {
+    created_at: std::time::Instant,
     timestamp_req: String,
     request: LoggedRequest,
 }
@@ -324,13 +325,38 @@ impl RequestHandler for TrafficLogHandler {
         // Store pending for pairing with response
         req.extensions_mut().insert(LogId(id));
         if let Ok(mut pending) = self.pending.lock() {
-            // Prevent unbounded growth from failed upstream requests
-            if pending.len() > 1000 {
-                let oldest = *pending.keys().min().unwrap();
-                pending.remove(&oldest);
-                tracing::warn!("Evicted unpaired log entry {oldest} (pending overflow)");
+            // Expire stale entries (>60s) instead of evicting live ones
+            let now = std::time::Instant::now();
+            let expired: Vec<u64> = pending
+                .iter()
+                .filter(|(_, v)| now.duration_since(v.created_at).as_secs() > 60)
+                .map(|(k, _)| *k)
+                .collect();
+            for eid in &expired {
+                if let Some(stale) = pending.remove(eid) {
+                    tracing::warn!("Expired unpaired log entry {eid} (>60s)");
+                    // Emit synthetic timeout entry
+                    let entry = LogEntry {
+                        id: *eid,
+                        timestamp_req: stale.timestamp_req,
+                        timestamp_res: format_timestamp(),
+                        request: stale.request,
+                        response: LoggedResponse {
+                            status: 0,
+                            version: String::new(),
+                            headers: Vec::new(),
+                            body: None,
+                            body_base64: None,
+                            body_truncated: true,
+                        },
+                    };
+                    if self.tx.try_send(entry).is_err() {
+                        tracing::warn!("Traffic log queue full, expired entry dropped");
+                    }
+                }
             }
             pending.insert(id, PendingLogEntry {
+                created_at: now,
                 timestamp_req: format_timestamp(),
                 request: logged_req,
             });
