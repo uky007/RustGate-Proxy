@@ -377,7 +377,9 @@ async fn run_replay(
             "if-modified-since", "if-unmodified-since", "range",
         ];
         for (name, value) in &entry.request.headers {
-            if name.eq_ignore_ascii_case("host") {
+            if value == "<redacted>" {
+                continue; // never replay redacted placeholder values
+            } else if name.eq_ignore_ascii_case("host") {
                 builder = builder.header("host", &host);
             } else if name.eq_ignore_ascii_case("content-length")
                 || name.eq_ignore_ascii_case("transfer-encoding")

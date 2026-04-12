@@ -221,13 +221,14 @@ async fn handle_forward(
                     }
                     None => {
                         error!("Response body collection failed");
+                        flush_log_on_error(&state.handler, log_id, 502);
                         return Ok(bad_gateway("Response body read error"));
                     }
                 }
             } else {
                 Response::from_parts(parts, boxed_body(body))
             };
-            if let Some(id) = log_id { response.extensions_mut().insert(id); }
+            if let Some(id) = log_id.clone() { response.extensions_mut().insert(id); }
             state.handler.handle_response(&mut response);
             if response.extensions().get::<Dropped>().is_some() {
                 return Ok(interceptor_dropped_response());
@@ -467,13 +468,14 @@ async fn mitm_forward_request(
                     }
                     None => {
                         error!("MITM response body collection failed");
+                        flush_log_on_error(&state.handler, log_id, 502);
                         return Ok(bad_gateway("Response body read error"));
                     }
                 }
             } else {
                 Response::from_parts(parts, boxed_body(body))
             };
-            if let Some(id) = log_id { response.extensions_mut().insert(id); }
+            if let Some(id) = log_id.clone() { response.extensions_mut().insert(id); }
             state.handler.handle_response(&mut response);
             if response.extensions().get::<Dropped>().is_some() {
                 return Ok(interceptor_dropped_response());

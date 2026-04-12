@@ -206,6 +206,28 @@ impl TrafficLogHandler {
         inner: Arc<dyn RequestHandler>,
         path: &Path,
     ) -> std::io::Result<Self> {
+        // Reject symlinks to prevent writing to unintended locations
+        #[cfg(unix)]
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Refusing to write log to symlink: {}", path.display()),
+                ));
+            }
+        }
+
+        // Create with restricted permissions (owner-only on Unix)
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(path)?
+        };
+        #[cfg(not(unix))]
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
